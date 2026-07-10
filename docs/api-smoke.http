@@ -1,0 +1,14 @@
+GET http://localhost:8000/health
+
+###
+GET http://localhost:8000/api/static/v1/feed
+
+###
+POST http://localhost:8000/api/auth/v1/register
+Content-Type: application/json
+
+{
+  "email": "commuter@example.com",
+  "password": "secure-password"
+}
+

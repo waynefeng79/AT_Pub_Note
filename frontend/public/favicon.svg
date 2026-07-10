@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Bus stop bulletin">
+  <defs>
+    <linearGradient id="background" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#12313f"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#background)"/>
+  <path d="M15 51V12" stroke="#d9f7f3" stroke-width="4" stroke-linecap="round"/>
+  <rect x="9" y="10" width="19" height="13" rx="4" fill="#ffffff"/>
+  <path d="M14 16.5h9" stroke="#12313f" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="M14 19.5h6" stroke="#0f766e" stroke-width="2" stroke-linecap="round"/>
+  <path d="M13 47h13" stroke="#d9f7f3" stroke-width="4" stroke-linecap="round"/>
+  <path d="M19 28h25c4 0 7 3 7 7v7H15v-10c0-2.2 1.8-4 4-4Z" fill="#5eead4"/>
+  <path d="M21 33h21c2.2 0 4 1.8 4 4v1H20v-4c0-.6.4-1 1-1Z" fill="#12313f"/>
+  <path d="M19 43h30" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="23" cy="45" r="3.5" fill="#12313f"/>
+  <circle cx="43" cy="45" r="3.5" fill="#12313f"/>
+  <circle cx="23" cy="45" r="1.4" fill="#ffffff"/>
+  <circle cx="43" cy="45" r="1.4" fill="#ffffff"/>
+</svg>

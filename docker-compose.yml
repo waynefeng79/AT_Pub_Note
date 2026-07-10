@@ -1,0 +1,147 @@
+services:
+  migrate:
+    image: at-pub-note-migration:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: migration
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://at:at@postgres:5432/at_pub_note}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: at-pub-note-backend:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://at:at@postgres:5432/at_pub_note}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-1440}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-at_public_note_session}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
+      GTFS_STATIC_URL: ${GTFS_STATIC_URL:-}
+      GTFS_STATIC_ZIP_PATH: /app/data/gtfs.zip
+      GTFS_RETAIN_INACTIVE_FEEDS: ${GTFS_RETAIN_INACTIVE_FEEDS:-2}
+      GTFS_REALTIME_URL: ${GTFS_REALTIME_URL:-}
+      REALTIME_RAW_PATH: /app/data/RealTimeRaw.json
+      REALTIME_FEED_FORMAT: ${REALTIME_FEED_FORMAT:-auto}
+      FRONTEND_ORIGINS: ${COMPOSE_FRONTEND_ORIGINS:-http://localhost:5173,http://localhost:8080}
+      AT_API_KEY: ${AT_API_KEY:-}
+    volumes:
+      - ./data:/app/data:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  static-worker:
+    image: at-pub-note-backend:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime
+    command: ["python", "-m", "app.workers.static_import", "--loop"]
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://at:at@postgres:5432/at_pub_note}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
+      GTFS_STATIC_URL: ${GTFS_STATIC_URL:-}
+      GTFS_STATIC_ZIP_PATH: /app/data/gtfs.zip
+      GTFS_STATIC_POLL_SECONDS: ${GTFS_STATIC_POLL_SECONDS:-3600}
+      GTFS_RETAIN_INACTIVE_FEEDS: ${GTFS_RETAIN_INACTIVE_FEEDS:-2}
+      AT_API_KEY: ${AT_API_KEY:-}
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  realtime-worker:
+    image: at-pub-note-backend:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime
+    command: ["python", "-m", "app.workers.realtime_poll", "--loop"]
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://at:at@postgres:5432/at_pub_note}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
+      GTFS_REALTIME_URL: ${GTFS_REALTIME_URL:-}
+      REALTIME_RAW_PATH: /app/data/RealTimeRaw.json
+      REALTIME_FEED_FORMAT: ${REALTIME_FEED_FORMAT:-auto}
+      GTFS_REALTIME_POLL_SECONDS: ${GTFS_REALTIME_POLL_SECONDS:-30}
+      GTFS_REALTIME_LOCK_TTL_SECONDS: ${GTFS_REALTIME_LOCK_TTL_SECONDS:-600}
+      AT_API_KEY: ${AT_API_KEY:-}
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_MAP_STYLE_URL: ${VITE_MAP_STYLE_URL:-}
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+  postgres:
+    build:
+      context: .
+      dockerfile: deploy/db/Dockerfile.postgis
+    image: at-pub-note-postgis:16
+    command:
+      [
+        "postgres",
+        "-c",
+        "max_wal_size=2GB",
+        "-c",
+        "checkpoint_timeout=15min",
+        "-c",
+        "checkpoint_completion_target=0.9",
+        "-c",
+        "wal_compression=on",
+      ]
+    environment:
+      POSTGRES_DB: at_pub_note
+      POSTGRES_USER: at
+      POSTGRES_PASSWORD: at
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres-data:
