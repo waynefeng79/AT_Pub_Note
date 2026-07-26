@@ -97,6 +97,7 @@ FRONTEND_ORIGINS=https://www.yuyuw.xyz
 JWT_SECRET_KEY=<long-random-secret>
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAMESITE=none
+WEB_CONCURRENCY=2
 AT_API_KEY=<your-at-api-key>
 ```
 

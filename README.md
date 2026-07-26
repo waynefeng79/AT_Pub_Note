@@ -62,6 +62,10 @@ Full stack with background workers:
 docker compose up --build
 ```
 
+The backend container runs `WEB_CONCURRENCY` Uvicorn workers, defaulting to `2`.
+For a 2 vCPU EC2 instance, start with `WEB_CONCURRENCY=2`; reduce to `1` if
+memory is tight or increase only after checking database pool pressure.
+
 The full stack starts the one-shot `migrate` service first. API and worker
 containers wait for it to complete, so runtime code does not create or alter
 tables during request handling or polling loops.
