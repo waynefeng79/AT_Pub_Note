@@ -38,9 +38,17 @@ class GtfsRepository:
     def route_list(self, feed_version: str, search: str | None, route_types: list[int], limit: int, offset: int) -> dict:
         where = [psql.SQL("feed_version = %s")]
         params: list = [feed_version]
-        if search:
-            where.append(psql.SQL("(route_short_name ILIKE %s OR route_long_name ILIKE %s)"))
-            params.extend([f"%{search}%", f"%{search}%"])
+        search_text = search.strip() if search else ""
+        if search_text:
+            where.append(
+                psql.SQL(
+                    """
+                    to_tsvector('simple', coalesce(route_short_name, '') || ' ' || coalesce(route_long_name, ''))
+                    @@ plainto_tsquery('simple', %s)
+                    """
+                )
+            )
+            params.append(search_text)
         if route_types:
             where.append(psql.SQL("route_type = ANY(%s)"))
             params.append(route_types)

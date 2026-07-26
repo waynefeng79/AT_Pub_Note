@@ -4,19 +4,42 @@ from app.repositories.gtfs import GtfsRepository
 
 
 class FakeResult:
+    def __init__(self, rows=None, row=None):
+        self.rows = rows or []
+        self.row = row
+
     def fetchall(self):
-        return []
+        return self.rows
+
+    def fetchone(self):
+        return self.row
 
 
 class FakeConnection:
     def __init__(self):
         self.sql = None
         self.params = None
+        self.executions = []
 
     def execute(self, sql, params=None):
         self.sql = sql.as_string(None) if hasattr(sql, "as_string") else sql
         self.params = params
+        self.executions.append((self.sql, params))
+        if "count(*) AS count FROM routes" in self.sql:
+            return FakeResult(row={"count": 0})
         return FakeResult()
+
+
+def test_route_list_uses_full_text_search_index_expression():
+    conn = FakeConnection()
+
+    rows = GtfsRepository(conn).route_list("feed-1", "eastern line", [], 50, 0)
+
+    assert rows == {"items": [], "total": 0}
+    assert "to_tsvector('simple'" in conn.sql
+    assert "@@ plainto_tsquery('simple', %s)" in conn.sql
+    assert "ILIKE" not in conn.sql
+    assert conn.params == ["feed-1", "eastern line", 50, 0]
 
 
 def test_departures_filters_by_service_calendar():
