@@ -35,7 +35,6 @@ def current_user(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     settings: Annotated[Settings, Depends(get_settings)],
-    conn: Annotated[DbConnection, Depends(get_conn)],
 ) -> dict:
     token = credentials.credentials if credentials else request.cookies.get(settings.session_cookie_name)
     if not token:
@@ -43,7 +42,18 @@ def current_user(
     payload = decode_token(token, settings.jwt_secret_key)
     if not payload or not payload.get("sub"):
         raise HTTPException(status_code=401, detail="Invalid token")
-    user = UserRepository(conn).get_by_id(int(payload["sub"]))
+    try:
+        user_id = int(payload["sub"])
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+    return {"id": user_id, "email": payload.get("email")}
+
+
+def current_db_user(
+    token_user: Annotated[dict, Depends(current_user)],
+    conn: Annotated[DbConnection, Depends(get_conn)],
+) -> dict:
+    user = UserRepository(conn).get_by_id(token_user["id"])
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user

@@ -8,10 +8,13 @@ from app.core.config import Settings
 
 
 class FakeUserRepository:
+    calls = 0
+
     def __init__(self, conn):
         self.conn = conn
 
     def get_by_id(self, user_id: int):
+        FakeUserRepository.calls += 1
         return {"id": user_id, "email": "commuter@example.com"}
 
 
@@ -40,25 +43,39 @@ def test_auth_payload_sets_httponly_session_cookie():
 
 
 def test_current_user_accepts_session_cookie(monkeypatch):
+    FakeUserRepository.calls = 0
     response = Response()
     payload = _auth_payload({"id": 7, "email": "commuter@example.com"}, settings(), response)
     request = request_with_cookie(f"test_session={payload['access_token']}")
     monkeypatch.setattr(deps, "UserRepository", FakeUserRepository)
 
-    user = deps.current_user(request, None, settings(), object())
+    user = deps.current_user(request, None, settings())
 
     assert user == {"id": 7, "email": "commuter@example.com"}
+    assert FakeUserRepository.calls == 0
 
 
 def test_current_user_keeps_bearer_compatibility(monkeypatch):
+    FakeUserRepository.calls = 0
     response = Response()
     payload = _auth_payload({"id": 7, "email": "commuter@example.com"}, settings(), response)
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=payload["access_token"])
     monkeypatch.setattr(deps, "UserRepository", FakeUserRepository)
 
-    user = deps.current_user(request_with_cookie(""), credentials, settings(), object())
+    user = deps.current_user(request_with_cookie(""), credentials, settings())
 
     assert user["id"] == 7
+    assert FakeUserRepository.calls == 0
+
+
+def test_current_db_user_validates_against_repository(monkeypatch):
+    FakeUserRepository.calls = 0
+    monkeypatch.setattr(deps, "UserRepository", FakeUserRepository)
+
+    user = deps.current_db_user({"id": 7, "email": "commuter@example.com"}, object())
+
+    assert user == {"id": 7, "email": "commuter@example.com"}
+    assert FakeUserRepository.calls == 1
 
 
 def test_logout_expires_session_cookie():
