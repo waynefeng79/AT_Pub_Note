@@ -16,10 +16,11 @@ class FakeResult:
 
 
 class FakeConnection:
-    def __init__(self):
+    def __init__(self, rows=None):
         self.sql = None
         self.params = None
         self.executions = []
+        self.rows = rows or []
 
     def execute(self, sql, params=None):
         self.sql = sql.as_string(None) if hasattr(sql, "as_string") else sql
@@ -27,6 +28,8 @@ class FakeConnection:
         self.executions.append((self.sql, params))
         if "count(*) AS count FROM routes" in self.sql:
             return FakeResult(row={"count": 0})
+        if "JOIN stop_times st ON st.feed_version = %s AND st.trip_id = r.trip_id" in self.sql:
+            return FakeResult(rows=self.rows)
         return FakeResult()
 
 
@@ -89,6 +92,68 @@ def test_route_stops_only_selects_trips_with_stop_times():
     assert "EXISTS" in conn.sql
     assert "FROM stop_times st" in conn.sql
     assert "st.trip_id = t.trip_id" in conn.sql
+    assert "JOIN stop_times st ON st.feed_version = %s AND st.trip_id = r.trip_id" in conn.sql
+    assert len(conn.executions) == 1
+
+
+def test_route_stops_groups_representative_stops_from_single_query():
+    conn = FakeConnection(
+        rows=[
+            {
+                "trip_id": "trip-0",
+                "route_id": "route-1",
+                "direction_id": 0,
+                "trip_headsign": "Inbound",
+                "stop_id": "stop-1",
+                "stop_sequence": 1,
+                "arrival_time": "08:00:00",
+                "departure_time": "08:00:00",
+                "stop_name": "First",
+                "stop_lat": -36.8,
+                "stop_lon": 174.7,
+                "platform_code": "A",
+            },
+            {
+                "trip_id": "trip-0",
+                "route_id": "route-1",
+                "direction_id": 0,
+                "trip_headsign": "Inbound",
+                "stop_id": "stop-2",
+                "stop_sequence": 2,
+                "arrival_time": "08:05:00",
+                "departure_time": "08:05:00",
+                "stop_name": "Second",
+                "stop_lat": -36.81,
+                "stop_lon": 174.71,
+                "platform_code": "B",
+            },
+            {
+                "trip_id": "trip-1",
+                "route_id": "route-1",
+                "direction_id": 1,
+                "trip_headsign": "Outbound",
+                "stop_id": "stop-3",
+                "stop_sequence": 1,
+                "arrival_time": "09:00:00",
+                "departure_time": "09:00:00",
+                "stop_name": "Third",
+                "stop_lat": -36.82,
+                "stop_lon": 174.72,
+                "platform_code": "C",
+            },
+        ]
+    )
+
+    rows = GtfsRepository(conn).route_stops("feed-1", "route-1", None, None)
+
+    assert len(rows) == 2
+    assert rows[0]["representative_trip_id"] == "trip-0"
+    assert rows[0]["direction_id"] == 0
+    assert [stop["stop_id"] for stop in rows[0]["stops"]] == ["stop-1", "stop-2"]
+    assert rows[1]["representative_trip_id"] == "trip-1"
+    assert rows[1]["direction_id"] == 1
+    assert [stop["stop_id"] for stop in rows[1]["stops"]] == ["stop-3"]
+    assert len(conn.executions) == 1
 
 
 def test_route_ids_for_trip_ids_uses_active_feed_scope():

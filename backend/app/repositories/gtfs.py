@@ -195,24 +195,61 @@ class GtfsRepository:
         if direction_id is not None:
             direction_sql = psql.SQL("AND t.direction_id = %s")
             params.append(direction_id)
-        reps = self.conn.execute(
+        rows = self.conn.execute(
             psql.SQL("""
-            SELECT DISTINCT ON (t.direction_id) t.trip_id
-            FROM trips t
-            WHERE t.feed_version = %s
-              AND t.route_id = %s
-              {}
-              AND EXISTS (
-                  SELECT 1
-                  FROM stop_times st
-                  WHERE st.feed_version = t.feed_version
-                    AND st.trip_id = t.trip_id
-              )
-            ORDER BY t.direction_id, t.trip_id
+            WITH reps AS (
+                SELECT DISTINCT ON (t.direction_id)
+                    t.trip_id, t.route_id, t.direction_id, t.trip_headsign
+                FROM trips t
+                WHERE t.feed_version = %s
+                  AND t.route_id = %s
+                  {}
+                  AND EXISTS (
+                      SELECT 1
+                      FROM stop_times st
+                      WHERE st.feed_version = t.feed_version
+                        AND st.trip_id = t.trip_id
+                  )
+                ORDER BY t.direction_id, t.trip_id
+            )
+            SELECT r.trip_id, r.route_id, r.direction_id, r.trip_headsign,
+                   st.stop_id, st.stop_sequence, st.arrival_time, st.departure_time,
+                   s.stop_name, s.stop_lat, s.stop_lon, s.platform_code
+            FROM reps r
+            JOIN stop_times st ON st.feed_version = %s AND st.trip_id = r.trip_id
+            JOIN stops s ON s.feed_version = st.feed_version AND s.stop_id = st.stop_id
+            ORDER BY r.direction_id NULLS FIRST, r.trip_id, st.stop_sequence
             """).format(direction_sql),
-            params,
+            [*params, feed_version],
         ).fetchall()
-        return [item for row in reps if (item := self.trip_stops(feed_version, row["trip_id"]))]
+        directions: dict[str, dict] = {}
+        for row in rows:
+            item = dict(row)
+            key = item["trip_id"]
+            direction = directions.setdefault(
+                key,
+                {
+                    "trip_id": item["trip_id"],
+                    "route_id": item["route_id"],
+                    "direction_id": item["direction_id"],
+                    "trip_headsign": item["trip_headsign"],
+                    "representative_trip_id": item["trip_id"],
+                    "stops": [],
+                },
+            )
+            direction["stops"].append(
+                {
+                    "stop_id": item["stop_id"],
+                    "stop_sequence": item["stop_sequence"],
+                    "arrival_time": item["arrival_time"],
+                    "departure_time": item["departure_time"],
+                    "stop_name": item["stop_name"],
+                    "stop_lat": item["stop_lat"],
+                    "stop_lon": item["stop_lon"],
+                    "platform_code": item["platform_code"],
+                }
+            )
+        return list(directions.values())
 
     def nearby_stops(self, feed_version: str, lat: float, lon: float, radius_m: int, limit: int) -> list[dict]:
         rows = self.conn.execute(
