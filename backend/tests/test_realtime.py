@@ -96,10 +96,15 @@ class FakePipeline:
         for key in keys:
             self.redis.values.pop(key, None)
             self.redis.hashes.pop(key, None)
+            self.redis.sets.pop(key, None)
 
     def hset(self, key, field, value):
         self.calls.append(("hset", key, field, value))
         self.redis.hashes.setdefault(key, {})[field] = value
+
+    def sadd(self, key, *values):
+        self.calls.append(("sadd", key, values))
+        self.redis.sets.setdefault(key, set()).update(values)
 
     def set(self, key, value):
         self.calls.append(("set", key, value))
@@ -116,7 +121,9 @@ class FakeRedis:
     def __init__(self):
         self.values = {}
         self.hashes = {}
+        self.sets = {}
         self.last_pipeline = None
+        self.hvals_calls = []
 
     def pipeline(self):
         self.last_pipeline = FakePipeline(self)
@@ -126,7 +133,14 @@ class FakeRedis:
         return self.values.get(key)
 
     def hvals(self, key):
+        self.hvals_calls.append(key)
         return list(self.hashes.get(key, {}).values())
+
+    def hmget(self, key, fields):
+        return [self.hashes.get(key, {}).get(field) for field in fields]
+
+    def smembers(self, key):
+        return set(self.sets.get(key, set()))
 
 
 def test_realtime_snapshot_stores_and_returns_feed_version():
@@ -300,3 +314,69 @@ def test_realtime_snapshot_filters_by_direction_id():
     )
 
     assert [item["vehicle_id"] for item in result["items"]] == ["bus-2"]
+
+
+def test_realtime_snapshot_uses_route_index_for_vehicles():
+    redis = FakeRedis()
+    snapshot = {
+        "generated_at": "2026-06-02T04:02:21+00:00",
+        "vehicles": [
+            {"vehicle_id": "bus-1", "route_id": "NX1", "direction_id": 0},
+            {"vehicle_id": "bus-2", "route_id": "NX2", "direction_id": 0},
+        ],
+        "trip_updates": [],
+        "alerts": [],
+    }
+
+    service = RealtimeService(redis)
+    service.store_snapshot(snapshot, "feed-1")
+    result = service.snapshot(
+        "vehicles",
+        type(
+            "Filters",
+            (),
+            {"route_ids": ["NX1"], "trip_ids": [], "vehicle_ids": [], "stop_ids": [], "direction_ids": []},
+        )(),
+    )
+
+    assert [item["vehicle_id"] for item in result["items"]] == ["bus-1"]
+    assert redis.hvals_calls == []
+
+
+def test_realtime_snapshot_uses_trip_hash_for_timetable_vehicle_lookup():
+    redis = FakeRedis()
+    snapshot = {
+        "generated_at": "2026-06-02T04:02:21+00:00",
+        "vehicles": [
+            {"vehicle_id": "bus-1", "route_id": "NX1", "trip_id": "trip-1"},
+            {"vehicle_id": "bus-2", "route_id": "NX2", "trip_id": "trip-2"},
+        ],
+        "trip_updates": [
+            {"trip_id": "trip-1", "route_id": "NX1", "stop_time_updates": []},
+            {"trip_id": "trip-2", "route_id": "NX2", "stop_time_updates": []},
+        ],
+        "alerts": [],
+    }
+
+    service = RealtimeService(redis)
+    service.store_snapshot(snapshot, "feed-1")
+    vehicle_result = service.snapshot(
+        "vehicles",
+        type(
+            "Filters",
+            (),
+            {"route_ids": [], "trip_ids": ["trip-2"], "vehicle_ids": [], "stop_ids": [], "direction_ids": []},
+        )(),
+    )
+    update_result = service.snapshot(
+        "trip_updates",
+        type(
+            "Filters",
+            (),
+            {"route_ids": [], "trip_ids": ["trip-2"], "vehicle_ids": [], "stop_ids": [], "direction_ids": []},
+        )(),
+    )
+
+    assert [item["vehicle_id"] for item in vehicle_result["items"]] == ["bus-2"]
+    assert [item["trip_id"] for item in update_result["items"]] == ["trip-2"]
+    assert redis.hvals_calls == []

@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.services.http import download_bytes
 
 JsonDict = dict[str, Any]
+REALTIME_INDEX_KEYS = "gtfsrt:index_keys"
 
 
 def _translated(value: dict[str, Any] | None) -> str | None:
@@ -342,8 +343,7 @@ class RealtimeService:
     def snapshot(self, kind: str, filters) -> dict:
         generated_at = cast(str | None, self.redis.get("gtfsrt:generated_at"))
         feed_version = cast(str | None, self.redis.get("gtfsrt:feed_version"))
-        values = cast(list[str], self.redis.hvals(f"gtfsrt:{kind}"))
-        rows = [json.loads(value) for value in values]
+        rows = self._candidate_rows(kind, filters)
         return {"feed_version": feed_version, "generated_at": generated_at, "items": self._filter(rows, filters)}
 
     def store_snapshot(
@@ -354,14 +354,43 @@ class RealtimeService:
     ) -> None:
         _enrich_alert_routes(snapshot, static_trip_routes)
         _dedupe_alerts(snapshot)
+        previous_index_keys = cast(set[str], self.redis.smembers(REALTIME_INDEX_KEYS))
         pipe = self.redis.pipeline()
-        pipe.delete("gtfsrt:vehicles", "gtfsrt:trip_updates", "gtfsrt:alerts")
+        pipe.delete(
+            "gtfsrt:vehicles",
+            "gtfsrt:vehicles_by_trip",
+            "gtfsrt:trip_updates",
+            "gtfsrt:alerts",
+            REALTIME_INDEX_KEYS,
+            *previous_index_keys,
+        )
+        index_keys: set[str] = set()
         for item in snapshot["vehicles"]:
-            pipe.hset("gtfsrt:vehicles", item.get("vehicle_id") or item.get("trip_id") or json.dumps(item), json.dumps(item))
+            vehicle_key = item.get("vehicle_id") or item.get("trip_id") or json.dumps(item)
+            encoded = json.dumps(item)
+            pipe.hset("gtfsrt:vehicles", vehicle_key, encoded)
+            if item.get("trip_id"):
+                pipe.hset("gtfsrt:vehicles_by_trip", item["trip_id"], encoded)
+            if item.get("route_id"):
+                key = f"gtfsrt:vehicle_ids_by_route:{item['route_id']}"
+                index_keys.add(key)
+                pipe.sadd(key, vehicle_key)
         for item in snapshot["trip_updates"]:
-            pipe.hset("gtfsrt:trip_updates", item.get("trip_id") or json.dumps(item), json.dumps(item))
+            trip_key = item.get("trip_id") or json.dumps(item)
+            pipe.hset("gtfsrt:trip_updates", trip_key, json.dumps(item))
+            if item.get("route_id"):
+                key = f"gtfsrt:trip_update_ids_by_route:{item['route_id']}"
+                index_keys.add(key)
+                pipe.sadd(key, trip_key)
         for item in snapshot["alerts"]:
-            pipe.hset("gtfsrt:alerts", item.get("alert_id") or json.dumps(item), json.dumps(item))
+            alert_key = item.get("alert_id") or json.dumps(item)
+            pipe.hset("gtfsrt:alerts", alert_key, json.dumps(item))
+            for route_id in item.get("route_ids") or []:
+                key = f"gtfsrt:alert_ids_by_route:{route_id}"
+                index_keys.add(key)
+                pipe.sadd(key, alert_key)
+        if index_keys:
+            pipe.sadd(REALTIME_INDEX_KEYS, *sorted(index_keys))
         pipe.set("gtfsrt:generated_at", snapshot["generated_at"])
         if feed_version:
             pipe.set("gtfsrt:feed_version", feed_version)
@@ -380,6 +409,49 @@ class RealtimeService:
             ),
         )
         pipe.execute()
+
+    def _candidate_rows(self, kind: str, filters) -> list[dict]:
+        values = self._candidate_values(kind, filters)
+        if values is None:
+            return self._all_rows(kind)
+        return [json.loads(value) for value in values if value]
+
+    def _candidate_values(self, kind: str, filters) -> list[str | None] | None:
+        if kind == "vehicles":
+            if filters.vehicle_ids:
+                return cast(list[str | None], self.redis.hmget("gtfsrt:vehicles", filters.vehicle_ids))
+            if filters.trip_ids:
+                return cast(list[str | None], self.redis.hmget("gtfsrt:vehicles_by_trip", filters.trip_ids))
+            if filters.route_ids:
+                return self._hmget_by_route_sets("gtfsrt:vehicles", "gtfsrt:vehicle_ids_by_route", filters.route_ids)
+        if kind == "trip_updates":
+            if filters.trip_ids:
+                return cast(list[str | None], self.redis.hmget("gtfsrt:trip_updates", filters.trip_ids))
+            if filters.route_ids:
+                return self._hmget_by_route_sets("gtfsrt:trip_updates", "gtfsrt:trip_update_ids_by_route", filters.route_ids)
+        if kind == "alerts" and filters.route_ids:
+            return self._hmget_by_route_sets("gtfsrt:alerts", "gtfsrt:alert_ids_by_route", filters.route_ids)
+        return None
+
+    def _hmget_by_route_sets(self, hash_key: str, set_prefix: str, route_ids: list[str]) -> list[str | None]:
+        item_ids = self._route_index_ids(set_prefix, route_ids)
+        if not item_ids:
+            return []
+        return cast(list[str | None], self.redis.hmget(hash_key, item_ids))
+
+    def _route_index_ids(self, set_prefix: str, route_ids: list[str]) -> list[str]:
+        seen: set[str] = set()
+        item_ids: list[str] = []
+        for route_id in route_ids:
+            for item_id in cast(set[str], self.redis.smembers(f"{set_prefix}:{route_id}")):
+                if item_id not in seen:
+                    seen.add(item_id)
+                    item_ids.append(item_id)
+        return item_ids
+
+    def _all_rows(self, kind: str) -> list[dict]:
+        values = cast(list[str], self.redis.hvals(f"gtfsrt:{kind}"))
+        return [json.loads(value) for value in values]
 
     def _filter(self, items: list[dict], filters) -> list[dict]:
         filtered = []
