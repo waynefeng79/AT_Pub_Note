@@ -7,6 +7,7 @@ from redis import Redis
 
 from app.api.deps import current_user, get_redis_client
 from app.models import RealtimeRequest
+from app.services.activity import mark_realtime_user_active
 from app.services.realtime import RealtimeService
 
 router = APIRouter()
@@ -23,18 +24,21 @@ def matches_refresh(payload: dict, route_ids: list[str], trip_ids: list[str], ev
 @router.post("/vehicles")
 def vehicles(body: RealtimeRequest, user: Annotated[dict, Depends(current_user)], redis: Annotated[Redis, Depends(get_redis_client)], response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
+    mark_realtime_user_active(redis, user["id"])
     return RealtimeService(redis).snapshot("vehicles", body.realtime_filter)
 
 
 @router.post("/trip-updates")
 def trip_updates(body: RealtimeRequest, user: Annotated[dict, Depends(current_user)], redis: Annotated[Redis, Depends(get_redis_client)], response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
+    mark_realtime_user_active(redis, user["id"])
     return RealtimeService(redis).snapshot("trip_updates", body.realtime_filter)
 
 
 @router.post("/alerts")
 def alerts(body: RealtimeRequest, user: Annotated[dict, Depends(current_user)], redis: Annotated[Redis, Depends(get_redis_client)], response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
+    mark_realtime_user_active(redis, user["id"])
     return RealtimeService(redis).snapshot("alerts", body.realtime_filter)
 
 
@@ -50,8 +54,10 @@ def stream(
         pubsub = redis.pubsub()
         pubsub.subscribe("gtfsrt:channel")
         try:
+            mark_realtime_user_active(redis, user["id"])
             yield ": connected\n\n"
             while True:
+                mark_realtime_user_active(redis, user["id"])
                 message = pubsub.get_message(ignore_subscribe_messages=True, timeout=15)
                 if message is None:
                     yield ": heartbeat\n\n"
