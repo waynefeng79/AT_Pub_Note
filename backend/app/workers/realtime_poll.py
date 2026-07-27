@@ -78,14 +78,21 @@ def active_feed_version(db: Database) -> str | None:
         return feed["feed_version"] if feed else None
 
 
-def _alert_trip_ids(snapshot: dict) -> list[str]:
+def _static_lookup_trip_ids(snapshot: dict) -> list[str]:
     return sorted(
         {
             trip_id
-            for alert in snapshot.get("alerts", [])
-            for trip_id in alert.get("trip_ids") or []
+            for vehicle in snapshot.get("vehicles", [])
+            for trip_id in [vehicle.get("trip_id")]
             if trip_id
-        }
+        }.union(
+            {
+                trip_id
+                for alert in snapshot.get("alerts", [])
+                for trip_id in alert.get("trip_ids") or []
+                if trip_id
+            }
+        )
     )
 
 
@@ -101,10 +108,10 @@ def _poll_snapshot(settings: Settings, redis: Redis, db: Database) -> dict:
     data, source, content_type = load_realtime_bytes(settings)
     normalizer = RealtimeNormalizer(settings.realtime_feed_format)
     snapshot = normalizer.normalize(normalizer.parse(data, source, content_type))
-    static_trip_routes = _static_trip_routes(db, feed_version, _alert_trip_ids(snapshot))
+    static_trip_routes = _static_trip_routes(db, feed_version, _static_lookup_trip_ids(snapshot))
     RealtimeService(redis).store_snapshot(snapshot, feed_version, static_trip_routes)
     logger.info(
-        "Stored realtime snapshot feed_version=%s vehicles=%s trip_updates=%s alerts=%s static_alert_trip_routes=%s",
+        "Stored realtime snapshot feed_version=%s vehicles=%s trip_updates=%s alerts=%s static_trip_routes=%s",
         feed_version,
         len(snapshot["vehicles"]),
         len(snapshot["trip_updates"]),

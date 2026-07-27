@@ -70,6 +70,7 @@ export type VehicleItem = {
   route_id: string;
   trip_id: string;
   direction_id?: number | null;
+  schedule_relationship?: string | null;
   occupancy_status?: string | number | null;
   position: {
     latitude: number | null;

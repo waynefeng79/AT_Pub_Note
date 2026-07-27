@@ -59,6 +59,58 @@ def _enrich_alert_routes(snapshot: dict, static_trip_routes: dict[str, str] | No
         alert["route_ids"] = sorted(route_ids)
 
 
+NORMAL_TRIP_RELATIONSHIPS = {None, "", "SCHEDULED"}
+EXTRA_SERVICE_TRIP_RELATIONSHIPS = {"ADDED", "REPLACEMENT", "DUPLICATED"}
+TRIP_SCHEDULE_RELATIONSHIP_NAMES = {
+    0: "SCHEDULED",
+    1: "ADDED",
+    2: "UNSCHEDULED",
+    3: "CANCELED",
+    5: "REPLACEMENT",
+    6: "DUPLICATED",
+}
+
+
+def _schedule_relationship_name(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return TRIP_SCHEDULE_RELATIONSHIP_NAMES.get(value)
+    if isinstance(value, str) and value.isdigit():
+        return TRIP_SCHEDULE_RELATIONSHIP_NAMES.get(int(value))
+    return str(value)
+
+
+def _filter_commuter_visible_vehicles(snapshot: dict, static_trip_routes: dict[str, str] | None = None) -> None:
+    if static_trip_routes is None:
+        return
+    vehicles = []
+
+    for vehicle in snapshot.get("vehicles", []):
+        trip_id = vehicle.get("trip_id")
+        relationship = _schedule_relationship_name(vehicle.get("schedule_relationship"))
+        vehicle["schedule_relationship"] = relationship
+        route_id = vehicle.get("route_id")
+        static_route_id = static_trip_routes.get(trip_id)
+
+        if relationship in EXTRA_SERVICE_TRIP_RELATIONSHIPS:
+            if not route_id:
+                continue
+            if static_route_id and route_id != static_route_id:
+                continue
+            vehicles.append(vehicle)
+            continue
+
+        if relationship not in NORMAL_TRIP_RELATIONSHIPS or not route_id:
+            continue
+        if static_route_id and route_id != static_route_id:
+            continue
+        if static_route_id:
+            vehicle["route_id"] = static_route_id
+        vehicles.append(vehicle)
+    snapshot["vehicles"] = vehicles
+
+
 def _dedupe_alerts(snapshot: dict) -> None:
     deduped: dict[tuple, dict] = {}
     for alert in snapshot.get("alerts", []):
@@ -130,13 +182,17 @@ def _pb_has(message: Any, field_name: str) -> bool:
 
 
 def _pb_trip(trip: Any) -> JsonDict:
-    return {
+    payload = {
         "trip_id": trip.trip_id or None,
         "start_time": trip.start_time or None,
         "start_date": trip.start_date or None,
         "route_id": trip.route_id or None,
         "direction_id": trip.direction_id if _pb_has(trip, "direction_id") else None,
     }
+    schedule_relationship = _pb_enum_name(trip, "schedule_relationship")
+    if schedule_relationship:
+        payload["schedule_relationship"] = schedule_relationship
+    return payload
 
 
 def _pb_time_event(event: Any) -> JsonDict | None:
@@ -280,6 +336,7 @@ class RealtimeNormalizer:
                     "trip_id": trip.get("trip_id"),
                     "route_id": trip.get("route_id"),
                     "direction_id": trip.get("direction_id"),
+                    "schedule_relationship": _schedule_relationship_name(trip.get("schedule_relationship")),
                     "occupancy_status": vehicle.get("occupancy_status"),
                     "position": {
                         "latitude": position.get("latitude"),
@@ -307,6 +364,7 @@ class RealtimeNormalizer:
                     "trip_id": trip.get("trip_id"),
                     "route_id": trip.get("route_id"),
                     "direction_id": trip.get("direction_id"),
+                    "schedule_relationship": _schedule_relationship_name(trip.get("schedule_relationship")),
                     "delay": update.get("delay"),
                     "stop_time_updates": [
                         {
@@ -373,6 +431,7 @@ class RealtimeService:
         static_trip_routes: dict[str, str] | None = None,
     ) -> None:
         _enrich_alert_routes(snapshot, static_trip_routes)
+        _filter_commuter_visible_vehicles(snapshot, static_trip_routes)
         _dedupe_alerts(snapshot)
         _dedupe_vehicles(snapshot)
         previous_index_keys = cast(set[str], self.redis.smembers(REALTIME_INDEX_KEYS))

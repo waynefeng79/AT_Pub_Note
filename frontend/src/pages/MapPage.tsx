@@ -116,6 +116,11 @@ const UI_TEXT = {
     mode: 'Mode',
     route: 'Route',
     trip: 'Trip',
+    service: 'Service',
+    scheduledService: 'Scheduled',
+    extraService: 'Extra service',
+    replacementService: 'Replacement service',
+    duplicatedService: 'Duplicated service',
     status: 'Status',
     updated: 'Updated',
     speed: 'Speed',
@@ -179,6 +184,11 @@ const UI_TEXT = {
     mode: 'Momo',
     route: 'Ararere',
     trip: 'Haerenga',
+    service: 'Ratonga',
+    scheduledService: 'Kua whakaritea',
+    extraService: 'Ratonga tāpiri',
+    replacementService: 'Ratonga whakakapi',
+    duplicatedService: 'Ratonga tārua',
     status: 'Tūnga',
     updated: 'Kua whakahōu',
     speed: 'Tere',
@@ -264,13 +274,17 @@ function vehicleModeKey(routeType: number | null | undefined) {
   return 'bus';
 }
 
-function vehicleImageId(route: RouteItem | null) {
-  const routeColour = route ? colour(route).replace(/[^a-zA-Z0-9]/g, '') : '0f766e';
-  return `vehicle-${vehicleModeKey(route?.route_type)}-${routeColour}`;
+function isExtraServiceVehicle(vehicle: VehicleItem) {
+  return ['ADDED', 'REPLACEMENT', 'DUPLICATED'].includes(vehicle.schedule_relationship ?? '');
 }
 
-function ensureVehicleImage(mapInstance: maplibregl.Map, route: RouteItem | null) {
-  const imageId = vehicleImageId(route);
+function vehicleImageId(route: RouteItem | null, extraService = false) {
+  const routeColour = route ? colour(route).replace(/[^a-zA-Z0-9]/g, '') : '0f766e';
+  return `vehicle-${vehicleModeKey(route?.route_type)}-${routeColour}${extraService ? '-extra' : ''}`;
+}
+
+function ensureVehicleImage(mapInstance: maplibregl.Map, route: RouteItem | null, extraService = false) {
+  const imageId = vehicleImageId(route, extraService);
   if (mapInstance.hasImage(imageId)) return imageId;
 
   const size = 44;
@@ -289,6 +303,14 @@ function ensureVehicleImage(mapInstance: maplibregl.Map, route: RouteItem | null
   context.arc(size / 2, size / 2, 18, 0, Math.PI * 2);
   context.fill();
   context.stroke();
+
+  if (extraService) {
+    context.strokeStyle = '#f59e0b';
+    context.lineWidth = 3;
+    context.beginPath();
+    context.arc(size / 2, size / 2, 20, 0, Math.PI * 2);
+    context.stroke();
+  }
 
   context.fillStyle = '#ffffff';
   context.strokeStyle = '#ffffff';
@@ -334,12 +356,29 @@ function ensureVehicleImage(mapInstance: maplibregl.Map, route: RouteItem | null
     context.fill();
   }
 
+  if (extraService) {
+    context.fillStyle = '#f59e0b';
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(32, 12, 7, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(32, 8.5);
+    context.lineTo(32, 15.5);
+    context.moveTo(28.5, 12);
+    context.lineTo(35.5, 12);
+    context.stroke();
+  }
+
   mapInstance.addImage(imageId, context.getImageData(0, 0, size, size), { pixelRatio: 2 });
   return imageId;
 }
 
 function vehicleFeatures(items: VehicleItem[], route: RouteItem | null = null): Feature<Point>[] {
-  const imageId = vehicleImageId(route);
   return items
     .filter((item) => item.position.latitude != null && item.position.longitude != null)
     .map((item) => ({
@@ -349,7 +388,7 @@ function vehicleFeatures(items: VehicleItem[], route: RouteItem | null = null): 
         id: item.vehicle_id,
         trip_id: item.trip_id,
         bearing: item.position.bearing ?? 0,
-        mode_image: imageId
+        mode_image: vehicleImageId(route, isExtraServiceVehicle(item))
       },
       geometry: { type: 'Point', coordinates: [item.position.longitude!, item.position.latitude!] }
     }));
@@ -767,6 +806,7 @@ export function MapPage({ session, onLogout }: Props) {
       const routeCollection: FeatureCollection<LineString> = { type: 'FeatureCollection', features: shapeFeatures };
       const stopCollection: FeatureCollection<Point> = { type: 'FeatureCollection', features: stopFeatures };
       ensureVehicleImage(instance, route);
+      ensureVehicleImage(instance, route, true);
       const vehicleCollection: FeatureCollection<Point> = { type: 'FeatureCollection', features: vehicleFeatures(vehicleItemsRef.current, route) };
 
       upsertSource(instance, 'route-shapes', routeCollection);
@@ -968,6 +1008,7 @@ export function MapPage({ session, onLogout }: Props) {
     const source = instance.getSource('route-vehicles') as maplibregl.GeoJSONSource | undefined;
     if (source) {
       ensureVehicleImage(instance, selectedRouteRef.current);
+      ensureVehicleImage(instance, selectedRouteRef.current, true);
       source.setData({ type: 'FeatureCollection', features: vehicleFeatures(items, selectedRouteRef.current) });
     }
   }
@@ -1811,6 +1852,7 @@ function SelectedVehicleDetail({
       <dl>
         <div><dt>{t.trip}</dt><dd>{vehicleTripHeadsign(vehicle, directions, route)}</dd></div>
         <div><dt>{t.route}</dt><dd>{route ? routeLabel(route) : vehicle.route_id || '-'}</dd></div>
+        <div><dt>{t.service}</dt><dd>{formatScheduleRelationship(vehicle.schedule_relationship, t)}</dd></div>
         <div><dt>{t.status}</dt><dd>{delayLabel(update?.delay ?? null, t)}</dd></div>
         <div><dt>{t.updated}</dt><dd>{vehicle.timestamp ? formatRealtimeEpoch(vehicle.timestamp) : '-'}</dd></div>
         <div><dt>{t.speed}</dt><dd>{formatVehicleSpeed(vehicle.position.speed)}</dd></div>
@@ -1911,6 +1953,19 @@ function formatOccupancyStatus(status: string | number | null | undefined) {
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function formatScheduleRelationship(relationship: string | null | undefined, t: UiText) {
+  switch (relationship) {
+    case 'ADDED':
+      return t.extraService;
+    case 'REPLACEMENT':
+      return t.replacementService;
+    case 'DUPLICATED':
+      return t.duplicatedService;
+    default:
+      return t.scheduledService;
+  }
 }
 
 function upsertSource<T extends Point | LineString>(map: maplibregl.Map, id: string, data: FeatureCollection<T>) {

@@ -21,6 +21,7 @@ def test_protobuf_realtime_feed_normalizes_to_api_shape():
     vehicle_entity.vehicle.trip.trip_id = "trip-1"
     vehicle_entity.vehicle.trip.route_id = "NX1-203"
     vehicle_entity.vehicle.trip.direction_id = 1
+    vehicle_entity.vehicle.trip.schedule_relationship = gtfs_realtime_pb2.TripDescriptor.ADDED
     vehicle_entity.vehicle.vehicle.id = "bus-123"
     vehicle_entity.vehicle.position.latitude = -36.8485
     vehicle_entity.vehicle.position.longitude = 174.7633
@@ -62,6 +63,7 @@ def test_protobuf_realtime_feed_normalizes_to_api_shape():
         assert snapshot["generated_at"] == "2026-06-02T04:02:21+00:00"
         assert snapshot["vehicles"][0]["vehicle_id"] == "bus-123"
         assert snapshot["vehicles"][0]["route_id"] == "NX1-203"
+        assert snapshot["vehicles"][0]["schedule_relationship"] == "ADDED"
         assert snapshot["trip_updates"][0]["delay"] == 60
         assert snapshot["trip_updates"][0]["stop_time_updates"][0]["departure"]["time"] == 1780373000
         assert snapshot["alerts"][0]["cause"] == "CONSTRUCTION"
@@ -84,6 +86,44 @@ def test_http_content_type_selects_protobuf_without_file_extension():
     )
 
     assert parsed["response"]["header"]["gtfs_realtime_version"] == "2.0"
+
+
+def test_json_vehicle_schedule_relationship_numbers_are_normalized():
+    raw = {
+        "response": {
+            "header": {"timestamp": 1780372941},
+            "entity": [
+                {
+                    "id": "vehicle-entity",
+                    "vehicle": {
+                        "trip": {
+                            "trip_id": "1306-94102-55800-2-b8089d6a",
+                            "start_time": "15:30:00",
+                            "start_date": "20260602",
+                            "schedule_relationship": 0,
+                            "route_id": "941-203",
+                            "direction_id": 1,
+                        },
+                        "position": {
+                            "latitude": -36.7799653,
+                            "longitude": 174.7475262,
+                            "bearing": "274",
+                            "speed": 9,
+                        },
+                        "timestamp": 1780372565,
+                        "vehicle": {"id": "22850", "label": "RT1397", "license_plate": "LMW308"},
+                        "occupancy_status": 3,
+                    },
+                }
+            ],
+        }
+    }
+
+    snapshot = RealtimeNormalizer("json").normalize(raw)
+
+    assert snapshot["vehicles"][0]["schedule_relationship"] == "SCHEDULED"
+    assert snapshot["vehicles"][0]["route_id"] == "941-203"
+    assert snapshot["vehicles"][0]["direction_id"] == 1
 
 
 class FakePipeline:
@@ -341,6 +381,93 @@ def test_realtime_snapshot_uses_route_index_for_vehicles():
 
     assert [item["vehicle_id"] for item in result["items"]] == ["bus-1"]
     assert redis.hvals_calls == []
+
+
+def test_realtime_snapshot_keeps_scheduled_and_extra_service_vehicles():
+    redis = FakeRedis()
+    snapshot = {
+        "generated_at": "2026-06-02T04:02:21+00:00",
+        "vehicles": [
+            {
+                "vehicle_id": "scheduled",
+                "route_id": "EAST",
+                "trip_id": "trip-1",
+                "schedule_relationship": "SCHEDULED",
+            },
+            {
+                "vehicle_id": "added",
+                "route_id": "EAST",
+                "trip_id": "trip-2",
+                "schedule_relationship": "ADDED",
+            },
+            {
+                "vehicle_id": "replacement",
+                "route_id": "EAST",
+                "trip_id": "trip-5",
+                "schedule_relationship": "REPLACEMENT",
+            },
+            {
+                "vehicle_id": "duplicated",
+                "route_id": "EAST",
+                "trip_id": "trip-6",
+                "schedule_relationship": "DUPLICATED",
+            },
+            {
+                "vehicle_id": "unscheduled",
+                "route_id": "EAST",
+                "trip_id": "trip-7",
+                "schedule_relationship": "UNSCHEDULED",
+            },
+            {
+                "vehicle_id": "canceled",
+                "route_id": "EAST",
+                "trip_id": "trip-8",
+                "schedule_relationship": "CANCELED",
+            },
+            {
+                "vehicle_id": "extra-without-route",
+                "trip_id": "trip-9",
+                "schedule_relationship": "ADDED",
+            },
+            {
+                "vehicle_id": "scheduled-without-static-trip",
+                "route_id": "EAST",
+                "trip_id": "trip-3",
+                "schedule_relationship": "SCHEDULED",
+            },
+            {
+                "vehicle_id": "wrong-route",
+                "route_id": "WEST",
+                "trip_id": "trip-4",
+                "schedule_relationship": "SCHEDULED",
+            },
+        ],
+        "trip_updates": [],
+        "alerts": [],
+    }
+
+    service = RealtimeService(redis)
+    service.store_snapshot(
+        snapshot,
+        "feed-1",
+        {"trip-1": "EAST", "trip-4": "EAST"},
+    )
+    result = service.snapshot(
+        "vehicles",
+        type(
+            "Filters",
+            (),
+            {"route_ids": ["EAST"], "trip_ids": [], "vehicle_ids": [], "stop_ids": [], "direction_ids": []},
+        )(),
+    )
+
+    assert sorted(item["vehicle_id"] for item in result["items"]) == [
+        "added",
+        "duplicated",
+        "replacement",
+        "scheduled",
+        "scheduled-without-static-trip",
+    ]
 
 
 def test_realtime_snapshot_collapses_duplicate_vehicles_for_same_trip():
