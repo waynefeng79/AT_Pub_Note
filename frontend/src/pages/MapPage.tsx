@@ -130,6 +130,7 @@ const UI_TEXT = {
     upcomingTimetable: 'Upcoming vehicle timetable',
     loadingUpcoming: 'Loading upcoming vehicles...',
     noUpcoming: 'No upcoming vehicles found.',
+    noUpcomingSelectedRouteOnly: 'No upcoming vehicles for the selected route. Untick selected route only to see other routes at this stop.',
     realtimeVehicle: 'Realtime vehicle',
     noLicensePlate: 'No license plate',
     serviceAlertsTitle: 'Service alerts',
@@ -198,6 +199,7 @@ const UI_TEXT = {
     upcomingTimetable: 'Wātaka waka e haere mai ana',
     loadingUpcoming: 'E uta ana ngā waka e haere mai ana...',
     noUpcoming: 'Kāore he waka e haere mai ana.',
+    noUpcomingSelectedRouteOnly: 'Kāore he waka mō te ararere kua tīpakohia. Tangohia te tīpako ararere anake kia kite i ētahi atu ararere i tēnei tūnga.',
     realtimeVehicle: 'Waka wā-tūturu',
     noLicensePlate: 'Kāore he nama pereti',
     serviceAlertsTitle: 'Ngā whakatūpato ratonga',
@@ -1610,7 +1612,8 @@ function SelectedStopDetail({
 }) {
   const stop = detail.item;
   const now = Date.now();
-  const timetableRows = (schedule?.departures ?? [])
+  const departures = schedule?.departures ?? [];
+  const timetableRows = departures
     .filter((departure) => !selectedRouteOnly || !selectedRoute || departure.route_id === selectedRoute.route_id)
     .map((departure) => {
       const route = routes.find((item) => item.route_id === departure.route_id);
@@ -1622,6 +1625,9 @@ function SelectedStopDetail({
     .filter((row) => row.timing.epochMs == null || row.timing.epochMs >= now - 2 * 60 * 1000)
     .sort((a, b) => (a.timing.epochMs ?? Number.MAX_SAFE_INTEGER) - (b.timing.epochMs ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 8);
+  const emptyTimetableMessage = selectedRouteOnly && selectedRoute && departures.length > 0
+    ? t.noUpcomingSelectedRouteOnly
+    : t.noUpcoming;
 
   return (
     <section className="detail-card stop-detail-card">
@@ -1641,7 +1647,7 @@ function SelectedStopDetail({
       </header>
       <div className="stop-timetable" aria-label={t.upcomingTimetable}>
         {schedule?.loading && <p>{t.loadingUpcoming}</p>}
-        {!schedule?.loading && timetableRows.length === 0 && <p>{t.noUpcoming}</p>}
+        {!schedule?.loading && timetableRows.length === 0 && <p>{emptyTimetableMessage}</p>}
         {timetableRows.map(({ departure, route, vehicle, timing }) => {
           return (
             <article key={`${departure.trip_id}-${departure.stop_id}`}>
