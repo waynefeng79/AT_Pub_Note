@@ -9,6 +9,7 @@ import type {
   RealtimeRefreshEvent,
   RouteDirection,
   StopItem,
+  RouteTripItem,
   TripUpdateItem,
   User,
   VehicleItem
@@ -116,6 +117,20 @@ export function routeShapes(feedVersion: string, routeId: string, signal?: Abort
 export function routeStops(feedVersion: string, routeId: string, signal?: AbortSignal) {
   return request<{ feed_version: string; route_id: string; directions: RouteDirection[] }>(
     `/api/static/v1/feeds/${encodeURIComponent(feedVersion)}/routes/${encodeURIComponent(routeId)}/stops`,
+    { signal }
+  );
+}
+
+export function tripShape(feedVersion: string, tripId: string, signal?: AbortSignal) {
+  return request<{ feed_version: string } & RouteShape>(
+    `/api/static/v1/feeds/${encodeURIComponent(feedVersion)}/trips/${encodeURIComponent(tripId)}/shape`,
+    { signal }
+  );
+}
+
+export function tripStops(feedVersion: string, tripId: string, signal?: AbortSignal) {
+  return request<{ feed_version: string } & RouteDirection>(
+    `/api/static/v1/feeds/${encodeURIComponent(feedVersion)}/trips/${encodeURIComponent(tripId)}/stops`,
     { signal }
   );
 }
@@ -230,6 +245,15 @@ export function nextDepartures(
       time_window: { max_results: maxResults }
     })
   });
+}
+
+export function routeTrips(routeId: string, directionId?: number | null, signal?: AbortSignal, maxResults = 24) {
+  const query = new URLSearchParams({ route_id: routeId, max_results: String(maxResults) });
+  if (directionId != null) query.set('direction_id', String(directionId));
+  return request<{ feed_version: string; service_date?: string; items: RouteTripItem[] }>(
+    `/api/timetable/v1/route-trips?${query}`,
+    { signal }
+  );
 }
 
 export function favouriteRoutes(signal?: AbortSignal) {

@@ -2,7 +2,7 @@ from typing import Annotated
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from app.api.deps import current_user, get_conn
 from app.db.session import DbConnection
 from app.models import DeparturesRequest
@@ -79,5 +79,34 @@ def next_departures(body: DeparturesRequest, user: Annotated[dict, Depends(curre
         _next_from_seconds(body, service_date),
         seconds_from_gtfs_time(body.time_window.to_time, 47 * 3600 + 59 * 60 + 59),
         body.time_window.max_results,
+    )
+    return {"feed_version": feed_version, "service_date": service_date.isoformat(), "items": items}
+
+
+@router.get("/route-trips")
+def route_trips(
+    route_id: str,
+    user: Annotated[dict, Depends(current_user)],
+    conn: Annotated[DbConnection, Depends(get_conn)],
+    response: Response,
+    direction_id: int | None = None,
+    max_results: int = Query(default=24, ge=1, le=100),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    repo = GtfsRepository(conn)
+    feed_version = _active_version(repo)
+    current = datetime.now(GTFS_SERVICE_TIMEZONE)
+    service_date = current.date()
+    current_seconds = current.hour * 3600 + current.minute * 60 + current.second
+    from_seconds = max(0, current_seconds - NEXT_DEPARTURES_LOOKBACK_SECONDS)
+    to_seconds = 47 * 3600 + 59 * 60 + 59
+    items = repo.route_departure_trips(
+        feed_version,
+        route_id,
+        direction_id,
+        service_date,
+        from_seconds,
+        to_seconds,
+        max_results,
     )
     return {"feed_version": feed_version, "service_date": service_date.isoformat(), "items": items}
