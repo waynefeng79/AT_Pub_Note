@@ -42,6 +42,8 @@ export type StopItem = {
 export type RouteShape = {
   shape_id: string;
   direction_id?: number | null;
+  representative_trip_id?: string | null;
+  trip_headsign?: string | null;
   geometry: LineString;
 };
 
@@ -91,6 +93,14 @@ export type DepartureItem = {
   scheduled_departure_time: string;
   scheduled_departure_seconds: number;
   stop_name?: string;
+};
+
+export type RouteTripItem = {
+  trip_id: string;
+  route_id: string;
+  direction_id?: number | null;
+  trip_headsign?: string | null;
+  scheduled_departure_seconds?: number | null;
 };
 
 export type RealtimeTimeEvent = {

@@ -378,3 +378,63 @@ class GtfsRepository:
             params,
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def route_departure_trips(
+        self,
+        feed_version: str,
+        route_id: str,
+        direction_id: int | None,
+        service_date: date,
+        from_seconds: int,
+        to_seconds: int,
+        max_results: int,
+    ) -> list[dict]:
+        direction_sql = psql.SQL("AND t.direction_id = %s") if direction_id is not None else psql.SQL("")
+        weekday_column = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][service_date.weekday()]
+        gtfs_date = service_date.strftime("%Y%m%d")
+        params: list = [feed_version, gtfs_date, gtfs_date, feed_version, gtfs_date, feed_version, gtfs_date, feed_version, route_id]
+        if direction_id is not None:
+            params.append(direction_id)
+        params.extend([from_seconds, to_seconds, max_results])
+        rows = self.conn.execute(
+            psql.SQL("""
+            WITH active_services AS (
+                SELECT c.feed_version, c.service_id
+                FROM calendar c
+                WHERE c.feed_version = %s
+                  AND c.start_date <= %s
+                  AND c.end_date >= %s
+                  AND c.{} = 1
+
+                UNION
+
+                SELECT cd.feed_version, cd.service_id
+                FROM calendar_dates cd
+                WHERE cd.feed_version = %s
+                  AND cd.date = %s
+                  AND cd.exception_type = 1
+
+                EXCEPT
+
+                SELECT cd.feed_version, cd.service_id
+                FROM calendar_dates cd
+                WHERE cd.feed_version = %s
+                  AND cd.date = %s
+                  AND cd.exception_type = 2
+            )
+            SELECT t.trip_id, t.route_id, t.direction_id, t.trip_headsign,
+                   min(st.departure_seconds) AS scheduled_departure_seconds
+            FROM trips t
+            JOIN active_services active ON active.feed_version = t.feed_version AND active.service_id = t.service_id
+            JOIN stop_times st ON st.feed_version = t.feed_version AND st.trip_id = t.trip_id
+            WHERE t.feed_version = %s
+              AND t.route_id = %s
+              {}
+              AND st.departure_seconds BETWEEN %s AND %s
+            GROUP BY t.trip_id, t.route_id, t.direction_id, t.trip_headsign
+            ORDER BY scheduled_departure_seconds
+            LIMIT %s
+            """).format(psql.Identifier(weekday_column), direction_sql),
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
