@@ -343,6 +343,53 @@ def test_realtime_snapshot_uses_route_index_for_vehicles():
     assert redis.hvals_calls == []
 
 
+def test_realtime_snapshot_collapses_duplicate_vehicles_for_same_trip():
+    redis = FakeRedis()
+    snapshot = {
+        "generated_at": "2026-06-02T04:02:21+00:00",
+        "vehicles": [
+            {
+                "vehicle_id": "HE0253",
+                "vehicle_label": "HE0253",
+                "route_id": "EAST",
+                "trip_id": "trip-1",
+                "timestamp": 10,
+            },
+            {
+                "vehicle_id": "HE0507",
+                "vehicle_label": "HE0507",
+                "route_id": "EAST",
+                "trip_id": "trip-1",
+                "timestamp": 20,
+            },
+        ],
+        "trip_updates": [],
+        "alerts": [],
+    }
+
+    service = RealtimeService(redis)
+    service.store_snapshot(snapshot, "feed-1")
+    route_result = service.snapshot(
+        "vehicles",
+        type(
+            "Filters",
+            (),
+            {"route_ids": ["EAST"], "trip_ids": [], "vehicle_ids": [], "stop_ids": [], "direction_ids": []},
+        )(),
+    )
+    trip_result = service.snapshot(
+        "vehicles",
+        type(
+            "Filters",
+            (),
+            {"route_ids": [], "trip_ids": ["trip-1"], "vehicle_ids": [], "stop_ids": [], "direction_ids": []},
+        )(),
+    )
+
+    assert [item["vehicle_label"] for item in route_result["items"]] == ["HE0507"]
+    assert [item["vehicle_label"] for item in trip_result["items"]] == ["HE0507"]
+
+
 def test_realtime_snapshot_uses_trip_hash_for_timetable_vehicle_lookup():
     redis = FakeRedis()
     snapshot = {

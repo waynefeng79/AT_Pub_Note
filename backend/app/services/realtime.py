@@ -89,6 +89,26 @@ def _dedupe_alerts(snapshot: dict) -> None:
     snapshot["alerts"] = list(deduped.values())
 
 
+def _vehicle_snapshot_key(vehicle: dict) -> str:
+    return (
+        vehicle.get("trip_id")
+        or vehicle.get("vehicle_id")
+        or vehicle.get("vehicle_label")
+        or vehicle.get("vehicle_license_plate")
+        or json.dumps(vehicle, sort_keys=True)
+    )
+
+
+def _dedupe_vehicles(snapshot: dict) -> None:
+    deduped: dict[str, dict] = {}
+    for vehicle in snapshot.get("vehicles", []):
+        key = _vehicle_snapshot_key(vehicle)
+        existing = deduped.get(key)
+        if existing is None or (vehicle.get("timestamp") or 0) >= (existing.get("timestamp") or 0):
+            deduped[key] = vehicle
+    snapshot["vehicles"] = list(deduped.values())
+
+
 def _pb_text(value: Any) -> str | None:
     translations = getattr(value, "translation", [])
     return translations[0].text if translations else None
@@ -354,6 +374,7 @@ class RealtimeService:
     ) -> None:
         _enrich_alert_routes(snapshot, static_trip_routes)
         _dedupe_alerts(snapshot)
+        _dedupe_vehicles(snapshot)
         previous_index_keys = cast(set[str], self.redis.smembers(REALTIME_INDEX_KEYS))
         pipe = self.redis.pipeline()
         pipe.delete(

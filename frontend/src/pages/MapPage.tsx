@@ -345,6 +345,7 @@ function vehicleFeatures(items: VehicleItem[], route: RouteItem | null = null): 
     .map((item) => ({
       type: 'Feature',
       properties: {
+        vehicle_key: vehicleIdentityKey(item),
         id: item.vehicle_id,
         trip_id: item.trip_id,
         bearing: item.position.bearing ?? 0,
@@ -642,12 +643,14 @@ export function MapPage({ session, onLogout }: Props) {
   }, [feed?.feed_version]);
 
   function commitVehicleItems(items: VehicleItem[]) {
-    vehicleItemsRef.current = items;
-    setVehicleItems(items);
-    setSelectedVehicleHighlight((current) => current ? findMatchingVehicle(items, current) ?? current : current);
+    const dedupedItems = dedupeVehicleItems(items);
+    vehicleItemsRef.current = dedupedItems;
+    setVehicleItems(dedupedItems);
+    setSelectedVehicleHighlight((current) => current ? findMatchingVehicle(dedupedItems, current) ?? current : current);
     const selectedVehicle = selectedMapItemRef.current?.type === 'vehicle' ? selectedMapItemRef.current.item : null;
-    const updatedSelectedVehicle = selectedVehicle ? findMatchingVehicle(items, selectedVehicle) : null;
+    const updatedSelectedVehicle = selectedVehicle ? findMatchingVehicle(dedupedItems, selectedVehicle) : null;
     if (updatedSelectedVehicle) setSelectedMapItem({ type: 'vehicle', item: updatedSelectedVehicle });
+    return dedupedItems;
   }
 
   async function refreshActiveFeed() {
@@ -703,7 +706,7 @@ export function MapPage({ session, onLogout }: Props) {
       const primaryStops = primaryDirection?.stops ?? [];
       const primaryShapes = shapesForDirection(shapeResult.items, primaryDirection);
       const realtimeMatches = (version: string | null | undefined) => version === feedVersion;
-      const currentVehicles = realtimeMatches(vehicleResult.feed_version) ? vehicleResult.items.slice(0, 80) : [];
+      const currentVehicles = realtimeMatches(vehicleResult.feed_version) ? vehicleResult.items : [];
       const currentAlerts = realtimeMatches(alertResult.feed_version) ? alertResult.items.slice(0, 10) : [];
       const currentTripUpdates = realtimeMatches(tripUpdateResult.feed_version) ? tripUpdateResult.items : [];
       setRouteShapesData(shapeResult.items);
@@ -825,9 +828,8 @@ export function MapPage({ session, onLogout }: Props) {
           markMapItemClick(event);
           const feature = event.features?.[0];
           if (!feature) return;
-          const vehicleId = String(feature.properties?.id ?? '');
-          const tripId = String(feature.properties?.trip_id ?? '');
-          const vehicle = vehicleItemsRef.current.find((item) => item.vehicle_id === vehicleId || item.trip_id === tripId);
+          const vehicleKey = String(feature.properties?.vehicle_key ?? '');
+          const vehicle = vehicleItemsRef.current.find((item) => vehicleIdentityKey(item) === vehicleKey);
           if (vehicle) selectVehicle(vehicle);
         };
         instance.on('click', 'vehicle-points', handleVehicleClick);
@@ -1081,13 +1083,13 @@ export function MapPage({ session, onLogout }: Props) {
         feedRef.current?.feed_version !== expectedFeedVersion ||
         selectedDirectionIdRef.current !== expectedDirectionId
       ) return;
-      const currentVehicles = vehicleResult.feed_version === expectedFeedVersion ? vehicleResult.items.slice(0, 80) : [];
+      const currentVehicles = vehicleResult.feed_version === expectedFeedVersion ? vehicleResult.items : [];
       const currentAlerts = alertResult.feed_version === expectedFeedVersion ? alertResult.items.slice(0, 10) : [];
       const currentTripUpdates = tripUpdateResult.feed_version === expectedFeedVersion ? tripUpdateResult.items : [];
-      commitVehicleItems(currentVehicles);
+      const dedupedVehicles = commitVehicleItems(currentVehicles);
       setAlertItems(currentAlerts);
       setTripUpdateItems(currentTripUpdates);
-      renderVehicles(currentVehicles);
+      renderVehicles(dedupedVehicles);
       refreshSelectedStopSchedule();
       if (showBusy) {
         const realtimeReady = vehicleResult.feed_version === expectedFeedVersion && alertResult.feed_version === expectedFeedVersion;
@@ -1638,11 +1640,32 @@ function vehicleLabel(vehicle: VehicleItem | undefined) {
   return vehicle.vehicle_id ? `Vehicle ${vehicle.vehicle_id}` : 'Vehicle assigned';
 }
 
+function vehicleIdentityKey(vehicle: VehicleItem) {
+  const identity =
+    vehicle.trip_id ||
+    vehicle.vehicle_id ||
+    vehicle.vehicle_label ||
+    vehicle.vehicle_license_plate;
+  return String(identity || '').trim();
+}
+
+function dedupeVehicleItems(items: VehicleItem[]) {
+  const byIdentity = new Map<string, VehicleItem>();
+  for (const item of items) {
+    const key = vehicleIdentityKey(item);
+    if (!key) continue;
+    const existing = byIdentity.get(key);
+    if (!existing || (item.timestamp ?? 0) >= (existing.timestamp ?? 0)) {
+      byIdentity.set(key, item);
+    }
+  }
+  return Array.from(byIdentity.values()).slice(0, 80);
+}
+
 function findMatchingVehicle(items: VehicleItem[], vehicle: VehicleItem) {
-  return items.find((item) => (
-    (vehicle.vehicle_id && item.vehicle_id === vehicle.vehicle_id) ||
-    (vehicle.trip_id && item.trip_id === vehicle.trip_id)
-  ));
+  const vehicleKey = vehicleIdentityKey(vehicle);
+  if (vehicleKey) return items.find((item) => vehicleIdentityKey(item) === vehicleKey);
+  return undefined;
 }
 
 type HandledMapClick = MouseEvent & { mapItemHandled?: boolean };
