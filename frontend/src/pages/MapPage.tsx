@@ -76,6 +76,7 @@ type PendingRouteFocus =
 
 const AUCKLAND: [number, number] = [174.7633, -36.8485];
 const SELECTED_ROUTE_STORAGE_KEY = 'at-public-note:selected-route-id';
+const STOP_SELECTED_ROUTE_ONLY_STORAGE_KEY = 'at-public-note:stop-selected-route-only';
 const MAIN_ROUTE_TYPES = new Set([2, 3, 4]);
 const routeModeOptions: { value: RouteModeFilter; label: string; iconType: number }[] = [
   { value: 'all', label: 'All', iconType: 3 },
@@ -380,6 +381,23 @@ function rememberSelectedRoute(route: RouteItem | null) {
   }
 }
 
+function storedStopSelectedRouteOnly() {
+  try {
+    const savedValue = window.localStorage.getItem(STOP_SELECTED_ROUTE_ONLY_STORAGE_KEY);
+    return savedValue == null ? true : savedValue === 'true';
+  } catch {
+    return true;
+  }
+}
+
+function rememberStopSelectedRouteOnly(value: boolean) {
+  try {
+    window.localStorage.setItem(STOP_SELECTED_ROUTE_ONLY_STORAGE_KEY, String(value));
+  } catch {
+    // Storage can be unavailable in private browsing or restricted embeds.
+  }
+}
+
 export function MapPage({ session, onLogout }: Props) {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -418,7 +436,7 @@ export function MapPage({ session, onLogout }: Props) {
   const [selectedStopHighlight, setSelectedStopHighlight] = useState<StopItem | null>(null);
   const [selectedVehicleHighlight, setSelectedVehicleHighlight] = useState<VehicleItem | null>(null);
   const [stopSchedule, setStopSchedule] = useState<StopSchedule | null>(null);
-  const [stopPanelSelectedRouteOnly, setStopPanelSelectedRouteOnly] = useState(false);
+  const [stopPanelSelectedRouteOnly, setStopPanelSelectedRouteOnly] = useState(storedStopSelectedRouteOnly);
   const [stopRouteFilter, setStopRouteFilter] = useState<{ stop: StopItem; routeIds: string[] } | null>(null);
   const [routePickerOpen, setRoutePickerOpen] = useState(false);
   const [favourites, setFavourites] = useState<string[]>([]);
@@ -1039,6 +1057,11 @@ export function MapPage({ session, onLogout }: Props) {
     setSelectedRoute(route);
   }
 
+  function changeStopPanelSelectedRouteOnly(value: boolean) {
+    setStopPanelSelectedRouteOnly(value);
+    rememberStopSelectedRouteOnly(value);
+  }
+
   async function refreshRealtime(
     showBusy = true,
     expectedRouteId = selectedRouteRef.current?.route_id,
@@ -1428,7 +1451,7 @@ export function MapPage({ session, onLogout }: Props) {
                   routes={routeItems}
                   selectedRoute={selectedRoute}
                   selectedRouteOnly={stopPanelSelectedRouteOnly}
-                  onSelectedRouteOnlyChange={setStopPanelSelectedRouteOnly}
+                  onSelectedRouteOnlyChange={changeStopPanelSelectedRouteOnly}
                   onSelectRoute={selectDepartureRoute}
                   onSelectVehicle={selectDepartureVehicle}
                   t={t}
