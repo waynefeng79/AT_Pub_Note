@@ -26,6 +26,8 @@ import {
   routeStops,
   routesOnStops,
   streamRealtime,
+  tripShape,
+  tripStops,
   tripUpdates,
   vehicles,
   vehiclesForTrips
@@ -71,8 +73,14 @@ type StopSchedule = {
 };
 
 type PendingRouteFocus =
-  | { type: 'route'; routeId: string; directionId?: number | null }
+  | { type: 'route'; routeId: string; directionId?: number | null; tripId?: string | null }
   | { type: 'vehicle'; routeId: string; directionId?: number | null; vehicle: VehicleItem };
+
+type TripPattern = {
+  tripId: string;
+  shape: RouteShape | null;
+  direction: RouteDirection | null;
+};
 
 const AUCKLAND: [number, number] = [174.7633, -36.8485];
 const SELECTED_ROUTE_STORAGE_KEY = 'at-public-note:selected-route-id';
@@ -251,6 +259,13 @@ function colour(route: RouteItem) {
   return `#${value}`;
 }
 
+const BRANCH_COLOURS = ['#0f766e', '#2563eb', '#dc2626', '#7c3aed', '#ca8a04', '#0891b2', '#be185d'];
+
+function branchColour(route: RouteItem, index: number) {
+  if (index === 0) return colour(route);
+  return BRANCH_COLOURS[index % BRANCH_COLOURS.length];
+}
+
 function routeLabel(route: RouteItem) {
   const shortName = route.route_short_name?.trim();
   const longName = route.route_long_name?.trim();
@@ -394,6 +409,34 @@ function vehicleFeatures(items: VehicleItem[], route: RouteItem | null = null): 
       },
       geometry: { type: 'Point', coordinates: [item.position.longitude!, item.position.latitude!] }
     }));
+}
+
+function activeTripIds(vehicles: VehicleItem[], updates: TripUpdateItem[]) {
+  const ids = new Set<string>();
+  for (const vehicle of vehicles) {
+    if (vehicle.trip_id) ids.add(vehicle.trip_id);
+  }
+  for (const update of updates) {
+    if (update.trip_id) ids.add(update.trip_id);
+  }
+  return Array.from(ids).slice(0, 24);
+}
+
+function stopsFromPatterns(patterns: TripPattern[], fallback: StopItem[] = []) {
+  const stops = patterns.flatMap((pattern) => pattern.direction?.stops ?? []);
+  const source = stops.length > 0 ? stops : fallback;
+  const byStopId = new Map<string, StopItem>();
+  for (const stop of source) {
+    if (!byStopId.has(stop.stop_id)) byStopId.set(stop.stop_id, stop);
+  }
+  return Array.from(byStopId.values());
+}
+
+function shapesFromPatterns(patterns: TripPattern[], fallback: RouteShape[] = []) {
+  const shapes = patterns
+    .map((pattern) => pattern.shape)
+    .filter((shape): shape is RouteShape => Boolean(shape));
+  return shapes.length > 0 ? shapes : fallback;
 }
 
 function formatRealtimeEpoch(seconds: number) {
@@ -750,10 +793,17 @@ export function MapPage({ session, onLogout }: Props) {
       const currentVehicles = realtimeMatches(vehicleResult.feed_version) ? vehicleResult.items : [];
       const currentAlerts = realtimeMatches(alertResult.feed_version) ? alertResult.items.slice(0, 10) : [];
       const currentTripUpdates = realtimeMatches(tripUpdateResult.feed_version) ? tripUpdateResult.items : [];
+      const focusedTripId = pendingFocus?.type === 'vehicle' ? pendingFocus.vehicle.trip_id : pendingFocus?.tripId;
+      const tripIds = focusedTripId ? [focusedTripId] : activeTripIds(currentVehicles, currentTripUpdates);
+      const tripPatterns = await loadTripPatterns(feedVersion, tripIds, signal);
+      if (signal.aborted || requestId !== routeRequestId.current) return;
+      const mapShapes = shapesFromPatterns(tripPatterns, primaryShapes);
+      const mapStops = stopsFromPatterns(tripPatterns, primaryStops);
       setRouteShapesData(shapeResult.items);
       setRouteDirections(availableDirections);
       setSelectedDirectionIndex(primaryDirectionIndex);
-      setStops(primaryStops);
+      stopsRef.current = mapStops;
+      setStops(mapStops);
       commitVehicleItems(currentVehicles);
       setAlertItems(currentAlerts);
       setTripUpdateItems(currentTripUpdates);
@@ -775,7 +825,7 @@ export function MapPage({ session, onLogout }: Props) {
       }
       const stopToHighlight = pendingFocus ? null : highlightedStop;
       setSelectedStopHighlight(stopToHighlight);
-      renderMap(route, primaryShapes, primaryStops, stopToHighlight);
+      renderMap(route, mapShapes, mapStops, stopToHighlight);
       setMessage(
         realtimeMatches(vehicleResult.feed_version) && realtimeMatches(alertResult.feed_version)
           ? `${route.route_short_name || route.route_id} loaded`
@@ -789,15 +839,41 @@ export function MapPage({ session, onLogout }: Props) {
     }
   }
 
-  function renderMap(route: RouteItem, shapes: RouteShape[], routeStopItems: StopItem[], highlightedStop: StopItem | null = selectedStopHighlight) {
+  async function loadTripPatterns(feedVersion: string, tripIds: string[], signal?: AbortSignal): Promise<TripPattern[]> {
+    const uniqueTripIds = Array.from(new Set(tripIds.filter(Boolean))).slice(0, 24);
+    const patterns = await Promise.all(uniqueTripIds.map(async (tripId) => {
+      try {
+        const [shape, direction] = await Promise.all([
+          tripShape(feedVersion, tripId, signal),
+          tripStops(feedVersion, tripId, signal)
+        ]);
+        return { tripId, shape, direction };
+      } catch {
+        return { tripId, shape: null, direction: null };
+      }
+    }));
+    return patterns.filter((pattern) => pattern.shape || pattern.direction?.stops.length);
+  }
+
+  function renderMap(
+    route: RouteItem,
+    shapes: RouteShape[],
+    routeStopItems: StopItem[],
+    highlightedStop: StopItem | null = selectedStopHighlight,
+    options: { fitBounds?: boolean } = {}
+  ) {
     const instance = map.current;
     if (!instance) return;
 
     const paintRoute = () => {
       if (selectedRouteRef.current?.route_id !== route.route_id) return;
-      const shapeFeatures: Feature<LineString>[] = shapes.map((shape) => ({
+      const shapeFeatures: Feature<LineString>[] = shapes.map((shape, index) => ({
         type: 'Feature',
-        properties: { shape_id: shape.shape_id },
+        properties: {
+          shape_id: shape.shape_id,
+          trip_id: shape.representative_trip_id ?? '',
+          line_color: branchColour(route, index)
+        },
         geometry: shape.geometry
       }));
       const stopFeatures: Feature<Point>[] = routeStopItems.map((stop) => ({
@@ -820,10 +896,10 @@ export function MapPage({ session, onLogout }: Props) {
           id: 'route-line',
           type: 'line',
           source: 'route-shapes',
-          paint: { 'line-color': colour(route), 'line-width': 4.5, 'line-opacity': 0.88 }
+          paint: { 'line-color': ['get', 'line_color'], 'line-width': 4.5, 'line-opacity': 0.88 }
         });
       } else {
-        instance.setPaintProperty('route-line', 'line-color', colour(route));
+        instance.setPaintProperty('route-line', 'line-color', ['get', 'line_color']);
       }
 
       if (!instance.getLayer('stop-points')) {
@@ -908,7 +984,7 @@ export function MapPage({ session, onLogout }: Props) {
       renderSelectedStopHighlight(highlightedStop);
 
       const coordinates = shapes.flatMap((shape) => shape.geometry.coordinates);
-      if (coordinates.length) {
+      if (options.fitBounds !== false && coordinates.length) {
         const bounds = coordinates.reduce(
           (box, coord) => box.extend(coord as [number, number]),
           new maplibregl.LngLatBounds(coordinates[0] as [number, number], coordinates[0] as [number, number])
@@ -1021,6 +1097,7 @@ export function MapPage({ session, onLogout }: Props) {
     if (!direction) return;
     selectedDirectionIdRef.current = direction.direction_id ?? null;
     setSelectedDirectionIndex(index);
+    stopsRef.current = direction.stops;
     setStops(direction.stops);
     commitVehicleItems([]);
     setSelectedMapItem({ type: 'route', item: selectedRoute });
@@ -1035,6 +1112,32 @@ export function MapPage({ session, onLogout }: Props) {
     );
     if (feed?.feed_version) void refreshRealtime(true, selectedRoute.route_id, feed.feed_version, direction.direction_id);
     setMessage(`${directionLabel(direction, index)} selected`);
+  }
+
+  async function focusTripPattern(
+    route: RouteItem,
+    tripId: string,
+    directionId?: number | null,
+    vehicle?: VehicleItem
+  ) {
+    const feedVersion = feedRef.current?.feed_version;
+    if (!feedVersion) return;
+    const patterns = await loadTripPatterns(feedVersion, [tripId]);
+    const shapes = shapesFromPatterns(patterns, shapesForDirection(routeShapesData, { direction_id: directionId ?? null } as RouteDirection));
+    const stopsForTrip = stopsFromPatterns(patterns, stops);
+    stopsRef.current = stopsForTrip;
+    setStops(stopsForTrip);
+    if (vehicle) {
+      setSelectedVehicleHighlight(vehicle);
+      setSelectedStopHighlight(null);
+      setSelectedMapItem({ type: 'vehicle', item: vehicle });
+    } else {
+      setSelectedVehicleHighlight(null);
+      setSelectedStopHighlight(null);
+      setSelectedMapItem({ type: 'route', item: route });
+    }
+    setStopSchedule(null);
+    renderMap(route, shapes, stopsForTrip, null);
   }
 
   function selectDirectionForDeparture(departure: DepartureItem) {
@@ -1060,12 +1163,21 @@ export function MapPage({ session, onLogout }: Props) {
     setSelectedVehicleHighlight(vehicle);
     setSelectedStopHighlight(null);
     setSelectedMapItem({ type: 'vehicle', item: vehicle });
+    const route = selectedRouteRef.current;
+    if (route && vehicle.trip_id) {
+      void focusTripPattern(route, vehicle.trip_id, vehicle.direction_id, vehicle);
+    }
   }
 
   function selectDepartureRoute(route: RouteItem, departure: DepartureItem) {
     setRoutePickerOpen(false);
     selectedStopHighlightRef.current = null;
-    pendingRouteFocusRef.current = { type: 'route', routeId: route.route_id, directionId: departure.direction_id };
+    pendingRouteFocusRef.current = {
+      type: 'route',
+      routeId: route.route_id,
+      directionId: departure.direction_id,
+      tripId: departure.trip_id
+    };
     if (selectedRouteRef.current?.route_id === route.route_id) {
       selectDirectionForDeparture(departure);
       pendingRouteFocusRef.current = null;
@@ -1073,6 +1185,7 @@ export function MapPage({ session, onLogout }: Props) {
       setSelectedStopHighlight(null);
       setStopSchedule(null);
       setSelectedMapItem({ type: 'route', item: route });
+      void focusTripPattern(route, departure.trip_id, departure.direction_id);
       return;
     }
     setSelectedRoute(route);
@@ -1133,6 +1246,24 @@ export function MapPage({ session, onLogout }: Props) {
       setAlertItems(currentAlerts);
       setTripUpdateItems(currentTripUpdates);
       renderVehicles(dedupedVehicles);
+      const route = selectedRouteRef.current;
+      if (route && selectedMapItemRef.current?.type !== 'vehicle') {
+        const direction = routeDirections.find((item) => item.direction_id === expectedDirectionId) ?? null;
+        const fallbackShapes = shapesForDirection(routeShapesData, direction);
+        const fallbackStops = direction?.stops ?? stopsRef.current;
+        const tripPatterns = await loadTripPatterns(expectedFeedVersion, activeTripIds(currentVehicles, currentTripUpdates));
+        if (
+          selectedRouteRef.current?.route_id === expectedRouteId &&
+          feedRef.current?.feed_version === expectedFeedVersion &&
+          selectedDirectionIdRef.current === expectedDirectionId
+        ) {
+          const mapShapes = shapesFromPatterns(tripPatterns, fallbackShapes);
+          const mapStops = stopsFromPatterns(tripPatterns, fallbackStops);
+          stopsRef.current = mapStops;
+          setStops(mapStops);
+          renderMap(route, mapShapes, mapStops, selectedStopHighlightRef.current, { fitBounds: false });
+        }
+      }
       refreshSelectedStopSchedule();
       if (showBusy) {
         const realtimeReady = vehicleResult.feed_version === expectedFeedVersion && alertResult.feed_version === expectedFeedVersion;

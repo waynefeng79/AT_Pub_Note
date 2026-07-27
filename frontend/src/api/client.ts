@@ -120,6 +120,20 @@ export function routeStops(feedVersion: string, routeId: string, signal?: AbortS
   );
 }
 
+export function tripShape(feedVersion: string, tripId: string, signal?: AbortSignal) {
+  return request<{ feed_version: string } & RouteShape>(
+    `/api/static/v1/feeds/${encodeURIComponent(feedVersion)}/trips/${encodeURIComponent(tripId)}/shape`,
+    { signal }
+  );
+}
+
+export function tripStops(feedVersion: string, tripId: string, signal?: AbortSignal) {
+  return request<{ feed_version: string } & RouteDirection>(
+    `/api/static/v1/feeds/${encodeURIComponent(feedVersion)}/trips/${encodeURIComponent(tripId)}/stops`,
+    { signal }
+  );
+}
+
 function realtimeFilter(routeIds: string[], directionId?: number | null) {
   return {
     route_ids: routeIds,

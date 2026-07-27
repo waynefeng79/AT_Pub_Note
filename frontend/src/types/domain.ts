@@ -42,6 +42,8 @@ export type StopItem = {
 export type RouteShape = {
   shape_id: string;
   direction_id?: number | null;
+  representative_trip_id?: string | null;
+  trip_headsign?: string | null;
   geometry: LineString;
 };
 
