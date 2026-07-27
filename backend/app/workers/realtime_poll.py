@@ -72,15 +72,10 @@ def _worker_lock(redis: Redis, ttl_seconds: int) -> Iterator[str]:
         release_worker_lock(redis, token)
 
 
-def active_feed_version(settings: Settings) -> str | None:
-    db = Database(settings)
-    db.open()
-    try:
-        with db.connection() as conn:
-            feed = GtfsRepository(conn).active_feed()
-            return feed["feed_version"] if feed else None
-    finally:
-        db.close()
+def active_feed_version(db: Database) -> str | None:
+    with db.connection() as conn:
+        feed = GtfsRepository(conn).active_feed()
+        return feed["feed_version"] if feed else None
 
 
 def _alert_trip_ids(snapshot: dict) -> list[str]:
@@ -94,24 +89,19 @@ def _alert_trip_ids(snapshot: dict) -> list[str]:
     )
 
 
-def _static_trip_routes(settings: Settings, feed_version: str | None, trip_ids: list[str]) -> dict[str, str]:
+def _static_trip_routes(db: Database, feed_version: str | None, trip_ids: list[str]) -> dict[str, str]:
     if not feed_version or not trip_ids:
         return {}
-    db = Database(settings)
-    db.open()
-    try:
-        with db.connection() as conn:
-            return GtfsRepository(conn).route_ids_for_trip_ids(feed_version, trip_ids)
-    finally:
-        db.close()
+    with db.connection() as conn:
+        return GtfsRepository(conn).route_ids_for_trip_ids(feed_version, trip_ids)
 
 
-def _poll_snapshot(settings: Settings, redis: Redis) -> dict:
-    feed_version = active_feed_version(settings)
+def _poll_snapshot(settings: Settings, redis: Redis, db: Database) -> dict:
+    feed_version = active_feed_version(db)
     data, source, content_type = load_realtime_bytes(settings)
     normalizer = RealtimeNormalizer(settings.realtime_feed_format)
     snapshot = normalizer.normalize(normalizer.parse(data, source, content_type))
-    static_trip_routes = _static_trip_routes(settings, feed_version, _alert_trip_ids(snapshot))
+    static_trip_routes = _static_trip_routes(db, feed_version, _alert_trip_ids(snapshot))
     RealtimeService(redis).store_snapshot(snapshot, feed_version, static_trip_routes)
     logger.info(
         "Stored realtime snapshot feed_version=%s vehicles=%s trip_updates=%s alerts=%s static_alert_trip_routes=%s",
@@ -127,16 +117,21 @@ def _poll_snapshot(settings: Settings, redis: Redis) -> dict:
 def poll_once() -> dict:
     settings = get_settings()
     redis = RedisClient(settings)
+    db = Database(settings)
+    db.open()
     try:
         with _worker_lock(redis.client, _lock_ttl(settings)):
-            return _poll_snapshot(settings, redis.client)
+            return _poll_snapshot(settings, redis.client, db)
     finally:
+        db.close()
         redis.close()
 
 
 def poll_loop() -> None:
     settings = get_settings()
     redis = RedisClient(settings)
+    db = Database(settings)
+    db.open()
     ttl_seconds = _lock_ttl(settings)
     try:
         with _worker_lock(redis.client, ttl_seconds) as token:
@@ -144,7 +139,7 @@ def poll_loop() -> None:
             while True:
                 try:
                     refresh_worker_lock(redis.client, token, ttl_seconds)
-                    _poll_snapshot(settings, redis.client)
+                    _poll_snapshot(settings, redis.client, db)
                     refresh_worker_lock(redis.client, token, ttl_seconds)
                 except RealtimePollerAlreadyRunning:
                     logger.exception("Realtime poll worker lock lost")
@@ -153,6 +148,7 @@ def poll_loop() -> None:
                     logger.exception("Realtime poll failed; leaving last Redis snapshot intact")
                 time.sleep(settings.gtfs_realtime_poll_seconds)
     finally:
+        db.close()
         redis.close()
 
 
