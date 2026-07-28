@@ -70,6 +70,14 @@ The full stack starts the one-shot `migrate` service first. API and worker
 containers wait for it to complete, so runtime code does not create or alter
 tables during request handling or polling loops.
 
+## Deployment
+
+Production deployment is documented in `docs/deployment.md`. The default
+solo compose under `deploy/solo` runs backend services, PostGIS, Redis,
+workers, and Caddy on one EC2 instance, with the frontend on Cloudflare Pages.
+The existing `deploy/backend` and `deploy/db` folders remain available for a
+split backend/database deployment.
+
 ### Frontend
 
 ```bash

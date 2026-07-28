@@ -1,0 +1,186 @@
+services:
+  postgres:
+    build:
+      context: ../db
+      dockerfile: Dockerfile.postgis
+    image: at-pub-note-postgis:16
+    command:
+      [
+        "postgres",
+        "-c",
+        "listen_addresses=*",
+        "-c",
+        "max_wal_size=2GB",
+        "-c",
+        "checkpoint_timeout=15min",
+        "-c",
+        "checkpoint_completion_target=0.9",
+        "-c",
+        "wal_compression=on",
+      ]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-at_pub_note}
+      POSTGRES_USER: ${POSTGRES_USER:-at}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    image: at-pub-note-migration:local
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      target: migration
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: at-pub-note-backend:local
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-6
+        awslogs-group: /at-pub-note/backend
+        awslogs-stream: backend
+        awslogs-create-group: "true"
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      target: runtime
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-1440}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-at_public_note_session}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-none}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:?set FRONTEND_ORIGINS}
+      GTFS_STATIC_URL: ${GTFS_STATIC_URL:?set GTFS_STATIC_URL}
+      GTFS_STATIC_ZIP_PATH: /app/data/gtfs.zip
+      GTFS_RETAIN_INACTIVE_FEEDS: ${GTFS_RETAIN_INACTIVE_FEEDS:-2}
+      GTFS_REALTIME_URL: ${GTFS_REALTIME_URL:?set GTFS_REALTIME_URL}
+      REALTIME_FEED_FORMAT: ${REALTIME_FEED_FORMAT:-auto}
+      AT_API_KEY: ${AT_API_KEY:?set AT_API_KEY}
+      AT_API_KEY_HEADER: ${AT_API_KEY_HEADER:-Ocp-Apim-Subscription-Key}
+      SPATIAL_CACHE_ENABLED: ${SPATIAL_CACHE_ENABLED:-true}
+      SPATIAL_CACHE_TTL_SECONDS: ${SPATIAL_CACHE_TTL_SECONDS:-900}
+      SPATIAL_CACHE_CELL_PRECISION: ${SPATIAL_CACHE_CELL_PRECISION:-3}
+    volumes:
+      - backend-data:/app/data
+    expose:
+      - "8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  static-worker:
+    image: at-pub-note-backend:local
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-6
+        awslogs-group: /at-pub-note/backend
+        awslogs-stream: static-worker
+        awslogs-create-group: "true"
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      target: runtime
+    command: ["python", "-m", "app.workers.static_import", "--loop"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      REDIS_URL: redis://redis:6379/0
+      GTFS_STATIC_URL: ${GTFS_STATIC_URL:?set GTFS_STATIC_URL}
+      GTFS_STATIC_ZIP_PATH: /app/data/gtfs.zip
+      GTFS_STATIC_POLL_SECONDS: ${GTFS_STATIC_POLL_SECONDS:-3600}
+      GTFS_RETAIN_INACTIVE_FEEDS: ${GTFS_RETAIN_INACTIVE_FEEDS:-2}
+      AT_API_KEY: ${AT_API_KEY:?set AT_API_KEY}
+      AT_API_KEY_HEADER: ${AT_API_KEY_HEADER:-Ocp-Apim-Subscription-Key}
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  realtime-worker:
+    image: at-pub-note-backend:local
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-6
+        awslogs-group: /at-pub-note/backend
+        awslogs-stream: realtime-worker
+        awslogs-create-group: "true"
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      target: runtime
+    command: ["python", "-m", "app.workers.realtime_poll", "--loop"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      REDIS_URL: redis://redis:6379/0
+      GTFS_REALTIME_URL: ${GTFS_REALTIME_URL:?set GTFS_REALTIME_URL}
+      REALTIME_FEED_FORMAT: ${REALTIME_FEED_FORMAT:-auto}
+      GTFS_REALTIME_POLL_SECONDS: ${GTFS_REALTIME_POLL_SECONDS:-30}
+      GTFS_REALTIME_LOCK_TTL_SECONDS: ${GTFS_REALTIME_LOCK_TTL_SECONDS:-600}
+      AT_API_KEY: ${AT_API_KEY:?set AT_API_KEY}
+      AT_API_KEY_HEADER: ${AT_API_KEY_HEADER:-Ocp-Apim-Subscription-Key}
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      BACKEND_DOMAIN: ${BACKEND_DOMAIN:?set BACKEND_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  backend-data:
+  caddy-data:
+  caddy-config:

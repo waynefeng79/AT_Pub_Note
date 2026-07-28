@@ -3,8 +3,10 @@
 This guide deploys:
 
 - Frontend on Cloudflare Pages
-- Backend, realtime worker, static worker, Redis, and HTTPS reverse proxy on one AWS EC2 instance
-- PostgreSQL/PostGIS on a second AWS EC2 instance
+- A solo option with backend, PostgreSQL/PostGIS, Redis, workers, and Caddy on
+  one AWS EC2 instance
+- A split option with backend services on one AWS EC2 instance and
+  PostgreSQL/PostGIS on a second AWS EC2 instance
 
 Local development still works with the root `docker-compose.yml` defaults.
 
@@ -21,70 +23,41 @@ Using the same parent domain for frontend and backend avoids many browser cookie
 
 ## AWS Security Groups
 
-Database EC2 security group:
+For the solo EC2 security group:
 
-- Inbound TCP `5432` from the backend EC2 private IP or backend security group only
+- Inbound TCP `80` from the internet for Let's Encrypt HTTP validation
+- Inbound TCP `443` from the internet for API HTTPS
+- SSH `22` from your IP only
+- Do not expose PostgreSQL or Redis publicly
+
+The solo compose file does not publish PostgreSQL or Redis ports. They are
+reachable only by other services on the Docker network.
+
+For the split deployment, database EC2 security group:
+
+- Inbound TCP `5432` from the backend EC2 private IP or backend security group
+  only
 - SSH `22` from your IP only
 - No public `5432` access
 
-Backend EC2 security group:
+For the split deployment, backend EC2 security group:
 
 - Inbound TCP `80` from the internet for Let's Encrypt HTTP validation
 - Inbound TCP `443` from the internet for API HTTPS
 - SSH `22` from your IP only
 - Do not expose Redis publicly
 
-## Database EC2
+## Solo EC2
 
-Install Docker and Docker Compose plugin.
-
-Copy these files to the database EC2:
-
-```text
-deploy/db/Dockerfile.postgis
-deploy/db/docker-compose.db.yml
-deploy/db/.env.db.example
-```
-
-Create `.env` next to `docker-compose.db.yml`:
-
-```bash
-cp .env.db.example .env
-```
-
-Edit `.env` and set a strong `POSTGRES_PASSWORD`.
-
-The database compose builds a local `at-pub-note-postgis:16` image from the
-official multi-architecture `postgres:16-bookworm` base and installs PostGIS
-packages inside it. This is intentional for AWS Graviton instances such as
-`t4g.small`: the upstream `postgis/postgis:16-3.4` image may resolve to
-`linux/amd64`, which causes this error on ARM64 hosts:
-
-```text
-image with reference docker.io/postgis/postgis:16-3.4 was found but does not match the specified platform: wanted linux/arm64, actual: linux/amd64
-```
-
-Start the database:
-
-```bash
-docker compose -f docker-compose.db.yml up -d --build
-```
-
-Check health:
-
-```bash
-docker compose -f docker-compose.db.yml ps
-```
-
-## Backend EC2
+Install Docker and the Docker Compose plugin.
 
 Point DNS `api.yuyuw.xyz` to the backend EC2 public IP.
 
 Copy the repo to the backend EC2, then create the backend env file:
 
 ```bash
-cd AT_Pub_Note/deploy/backend
-cp .env.backend.example .env
+cd AT_Pub_Note/deploy/solo
+cp .env.solo.example .env
 ```
 
 Edit `.env`:
@@ -92,7 +65,10 @@ Edit `.env`:
 ```bash
 BACKEND_DOMAIN=api.yuyuw.xyz
 ACME_EMAIL=<admin-email>
-DATABASE_URL=postgresql://at:<db-password>@<db-private-ip>:5432/at_pub_note
+POSTGRES_DB=at_pub_note
+POSTGRES_USER=at
+POSTGRES_PASSWORD=<strong-db-password>
+DATABASE_URL=postgresql://at:<strong-db-password>@postgres:5432/at_pub_note
 FRONTEND_ORIGINS=https://www.yuyuw.xyz
 JWT_SECRET_KEY=<long-random-secret>
 SESSION_COOKIE_SECURE=true
@@ -103,17 +79,27 @@ AT_API_KEY=<your-at-api-key>
 
 If frontend and API are same-site subdomains, for example `app.example.com` and `api.example.com`, `SESSION_COOKIE_SAMESITE=lax` is also acceptable. If using `*.pages.dev` to call `api.example.com`, keep `SESSION_COOKIE_SAMESITE=none`.
 
-Start backend services:
+The solo compose builds a local `at-pub-note-postgis:16` image from the
+official multi-architecture `postgres:16-bookworm` base and installs PostGIS
+packages inside it. This is intentional for AWS Graviton instances such as
+`t4g.small`: the upstream `postgis/postgis:16-3.4` image may resolve to
+`linux/amd64`, which causes this error on ARM64 hosts:
+
+```text
+image with reference docker.io/postgis/postgis:16-3.4 was found but does not match the specified platform: wanted linux/arm64, actual: linux/amd64
+```
+
+Start all backend-side services, including PostGIS and Redis:
 
 ```bash
-docker compose -f docker-compose.backend.yml up -d --build
+docker compose -f docker-compose.solo.yml up -d --build
 ```
 
 Check status and logs:
 
 ```bash
-docker compose -f docker-compose.backend.yml ps
-docker compose -f docker-compose.backend.yml logs -f backend realtime-worker static-worker caddy
+docker compose -f docker-compose.solo.yml ps
+docker compose -f docker-compose.solo.yml logs -f backend realtime-worker static-worker caddy postgres
 ```
 
 Test the backend:
@@ -123,6 +109,48 @@ curl https://api.yuyuw.xyz/api/static/v1/feed
 ```
 
 The first static import can take time because the worker imports the GTFS zip into PostGIS.
+
+## Split EC2
+
+Copy these files to the database EC2:
+
+```text
+deploy/db/Dockerfile.postgis
+deploy/db/docker-compose.db.yml
+deploy/db/.env.db.example
+```
+
+Create `.env` next to `docker-compose.db.yml`, set a strong
+`POSTGRES_PASSWORD`, then start the database:
+
+```bash
+cd AT_Pub_Note/deploy/db
+cp .env.db.example .env
+docker compose -f docker-compose.db.yml up -d --build
+```
+
+On the backend EC2, use the existing split backend deployment files:
+
+```text
+deploy/backend/Caddyfile
+deploy/backend/docker-compose.backend.yml
+deploy/backend/.env.backend.example
+```
+
+Create `.env` next to `docker-compose.backend.yml`, then set `DATABASE_URL` to
+the database EC2 private address:
+
+```text
+DATABASE_URL=postgresql://at:<db-password>@<db-private-ip>:5432/at_pub_note
+```
+
+Start the split backend services:
+
+```bash
+cd AT_Pub_Note/deploy/backend
+cp .env.backend.example .env
+docker compose -f docker-compose.backend.yml up -d --build
+```
 
 ## Cloudflare Pages Frontend
 
@@ -149,7 +177,15 @@ Deploy. Then add the resulting Cloudflare Pages origin or custom domain to backe
 FRONTEND_ORIGINS=https://www.yuyuw.xyz,https://yuyuw.xyz
 ```
 
-Restart backend after changing origins:
+Restart backend after changing origins.
+
+Solo:
+
+```bash
+docker compose -f docker-compose.solo.yml up -d backend
+```
+
+Split:
 
 ```bash
 docker compose -f docker-compose.backend.yml up -d backend
@@ -194,7 +230,15 @@ Keep `VITE_API_BASE_URL` empty when the frontend is served behind the local ngin
 
 ## Updating Production
 
-Backend EC2:
+Solo EC2:
+
+```bash
+git pull
+cd deploy/solo
+docker compose -f docker-compose.solo.yml up -d --build
+```
+
+Split backend EC2:
 
 ```bash
 git pull
@@ -206,10 +250,13 @@ Cloudflare Pages:
 
 - Push frontend changes to the connected branch, or trigger a redeploy in Cloudflare.
 
-Database EC2:
+Database:
 
+- For solo deployments, database schema migrations run through the `migrate`
+  service whenever the solo compose is started.
 - Usually no redeploy is required unless changing database infrastructure.
-- If the database image definition changes, rebuild it on the database EC2:
+- If a separate database EC2 image definition changes, rebuild it on the
+  database EC2:
 
 ```bash
 cd AT_Pub_Note/deploy/db
