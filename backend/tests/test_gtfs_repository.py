@@ -52,6 +52,7 @@ def test_departures_filters_by_service_calendar():
         "feed-1",
         ["stop-1"],
         ["route-1"],
+        [],
         date(2026, 7, 10),
         8 * 3600,
         10 * 3600,
@@ -63,6 +64,7 @@ def test_departures_filters_by_service_calendar():
     assert "JOIN active_services active" in conn.sql
     assert "FROM calendar_dates cd" in conn.sql
     assert "FROM calendar c" in conn.sql
+    assert "t.direction_id = ANY" not in conn.sql
     assert 'c."friday" = 1' in conn.sql
     assert "cd.exception_type = 1" in conn.sql
     assert "cd.exception_type = 2" in conn.sql
