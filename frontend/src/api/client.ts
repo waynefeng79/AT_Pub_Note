@@ -215,12 +215,18 @@ export function routesOnStops(stopIds: string[], signal?: AbortSignal) {
   });
 }
 
-export function nextDepartures(stopIds: string[], routeIds: string[], signal?: AbortSignal, maxResults = 8) {
+export function nextDepartures(
+  stopIds: string[],
+  routeIds: string[],
+  signal?: AbortSignal,
+  maxResults = 8,
+  directionIds: number[] = []
+) {
   return request<{ feed_version: string; service_date?: string; items: DepartureItem[] }>('/api/timetable/v1/next-departures', {
     method: 'POST',
     signal,
     body: JSON.stringify({
-      stop_filter: { stop_ids: stopIds, route_ids: routeIds },
+      stop_filter: { stop_ids: stopIds, route_ids: routeIds, direction_ids: directionIds },
       time_window: { max_results: maxResults }
     })
   });

@@ -25,6 +25,7 @@ class StopFilter(BaseModel):
     stop_ids: list[str] = []
     parent_station_ids: list[str] = []
     route_ids: list[str] = []
+    direction_ids: list[int] = []
 
 
 class ServiceDateFilter(BaseModel):

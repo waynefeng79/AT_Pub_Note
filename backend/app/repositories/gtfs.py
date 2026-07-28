@@ -319,17 +319,21 @@ class GtfsRepository:
         feed_version: str,
         stop_ids: list[str],
         route_ids: list[str],
+        direction_ids: list[int],
         service_date: date,
         from_seconds: int,
         to_seconds: int,
         max_results: int,
     ) -> list[dict]:
         route_sql = psql.SQL("AND t.route_id = ANY(%s)") if route_ids else psql.SQL("")
+        direction_sql = psql.SQL("AND t.direction_id = ANY(%s)") if direction_ids else psql.SQL("")
         weekday_column = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][service_date.weekday()]
         gtfs_date = service_date.strftime("%Y%m%d")
         params: list = [feed_version, gtfs_date, gtfs_date, feed_version, gtfs_date, feed_version, gtfs_date, feed_version, stop_ids, from_seconds, to_seconds]
         if route_ids:
             params.append(route_ids)
+        if direction_ids:
+            params.append(direction_ids)
         params.append(max_results)
         rows = self.conn.execute(
             psql.SQL("""
@@ -367,9 +371,10 @@ class GtfsRepository:
               AND st.stop_id = ANY(%s)
               AND st.departure_seconds BETWEEN %s AND %s
               {}
+              {}
             ORDER BY st.departure_seconds
             LIMIT %s
-            """).format(psql.Identifier(weekday_column), route_sql),
+            """).format(psql.Identifier(weekday_column), route_sql, direction_sql),
             params,
         ).fetchall()
         return [dict(row) for row in rows]

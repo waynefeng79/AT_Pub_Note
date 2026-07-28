@@ -453,6 +453,7 @@ export function MapPage({ session, onLogout }: Props) {
   const selectedDirectionIdRef = useRef<number | null>(null);
   const selectedMapItemRef = useRef<SelectedMapItem | null>(null);
   const selectedStopHighlightRef = useRef<StopItem | null>(null);
+  const stopPanelSelectedRouteOnlyRef = useRef(storedStopSelectedRouteOnly());
   const stopRouteFilterRef = useRef<{ stop: StopItem; routeIds: string[] } | null>(null);
   const stopsRef = useRef<StopItem[]>([]);
   const vehicleItemsRef = useRef<VehicleItem[]>([]);
@@ -494,6 +495,7 @@ export function MapPage({ session, onLogout }: Props) {
   selectedDirectionIdRef.current = routeDirections[selectedDirectionIndex]?.direction_id ?? null;
   selectedMapItemRef.current = selectedMapItem;
   selectedStopHighlightRef.current = selectedStopHighlight;
+  stopPanelSelectedRouteOnlyRef.current = stopPanelSelectedRouteOnly;
   stopRouteFilterRef.current = stopRouteFilter;
   stopsRef.current = stops;
 
@@ -1104,8 +1106,10 @@ export function MapPage({ session, onLogout }: Props) {
   }
 
   function changeStopPanelSelectedRouteOnly(value: boolean) {
+    stopPanelSelectedRouteOnlyRef.current = value;
     setStopPanelSelectedRouteOnly(value);
     rememberStopSelectedRouteOnly(value);
+    refreshSelectedStopSchedule();
   }
 
   async function refreshRealtime(
@@ -1245,7 +1249,21 @@ export function MapPage({ session, onLogout }: Props) {
       serviceDate: options.preserveItems && current?.stopId === stop.stop_id ? current.serviceDate : undefined
     }));
     try {
-      const departureResult = await nextDepartures([stop.stop_id], routeIds, undefined, 100);
+      const selectedRouteForStop = selectedRouteRef.current;
+      const selectedRouteOnly = stopPanelSelectedRouteOnlyRef.current;
+      const selectedDirectionId = selectedDirectionIdRef.current;
+      const selectedRouteApplies = Boolean(
+        selectedRouteOnly &&
+        selectedRouteForStop &&
+        (routeIds.length === 0 || routeIds.includes(selectedRouteForStop.route_id))
+      );
+      const requestRouteIds = selectedRouteApplies && selectedRouteForStop
+        ? [selectedRouteForStop.route_id]
+        : routeIds;
+      const requestDirectionIds = selectedRouteApplies && selectedDirectionId != null
+        ? [selectedDirectionId]
+        : [];
+      const departureResult = await nextDepartures([stop.stop_id], requestRouteIds, undefined, 100, requestDirectionIds);
       if (requestId !== stopScheduleRequestId.current) return;
       const tripIds = departureResult.items.map((item) => item.trip_id);
       const [updateResult, vehicleResult] = tripIds.length > 0
