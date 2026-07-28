@@ -8,7 +8,8 @@ from app.repositories.gtfs import GtfsRepository
 from app.services.static_gtfs import StaticGtfsService, response_etag
 
 router = APIRouter()
-
+import logging
+logger = logging.getLogger("uvicorn.error")
 
 def _headers(response: Response, feed_version: str, payload: dict, active: bool = False) -> None:
     response.headers["ETag"] = response_etag(payload)
@@ -72,6 +73,8 @@ def route_detail(feed_version: str, route_id: str, conn: Annotated[DbConnection,
 @router.get("/feeds/{feed_version}/routes/{route_id}/shapes")
 def route_shapes(feed_version: str, route_id: str, conn: Annotated[DbConnection, Depends(get_conn)], response: Response, direction_id: int | None = None) -> dict:
     payload = {"feed_version": feed_version, "route_id": route_id, "items": GtfsRepository(conn).route_shapes(feed_version, route_id, direction_id)}
+    if route_id == "BIRK-240":
+        logger.info("Returning shapes for route_id=%s direction_id=%s: %s", route_id, direction_id, payload)
     _headers(response, feed_version, payload)
     return payload
 
