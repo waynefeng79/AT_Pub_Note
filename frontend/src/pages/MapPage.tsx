@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import maplibregl from 'maplibre-gl';
 import {
   AlertTriangle,
@@ -77,6 +77,7 @@ type PendingRouteFocus =
 const AUCKLAND: [number, number] = [174.7633, -36.8485];
 const SELECTED_ROUTE_STORAGE_KEY = 'at-public-note:selected-route-id';
 const STOP_SELECTED_ROUTE_ONLY_STORAGE_KEY = 'at-public-note:stop-selected-route-only';
+const STOP_TIMETABLE_BATCH_SIZE = 8;
 const MAIN_ROUTE_TYPES = new Set([2, 3, 4]);
 const routeModeOptions: { value: RouteModeFilter; label: string; iconType: number }[] = [
   { value: 'all', label: 'All', iconType: 3 },
@@ -1616,7 +1617,8 @@ function SelectedStopDetail({
   const stop = detail.item;
   const now = Date.now();
   const departures = schedule?.departures ?? [];
-  const timetableRows = departures
+  const [visibleTimetableCount, setVisibleTimetableCount] = useState(STOP_TIMETABLE_BATCH_SIZE);
+  const timetableRows = useMemo(() => departures
     .filter((departure) => {
       if (!selectedRouteOnly || !selectedRoute) return true;
       if (departure.route_id !== selectedRoute.route_id) return false;
@@ -1633,10 +1635,21 @@ function SelectedStopDetail({
     })
     .filter((row) => row.timing.epochMs == null || row.timing.epochMs >= now - 2 * 60 * 1000)
     .sort((a, b) => (a.timing.epochMs ?? Number.MAX_SAFE_INTEGER) - (b.timing.epochMs ?? Number.MAX_SAFE_INTEGER))
-    .slice(0, 8);
+  , [departures, now, routes, schedule, selectedDirectionId, selectedRoute, selectedRouteOnly]);
+  const visibleTimetableRows = timetableRows.slice(0, visibleTimetableCount);
   const emptyTimetableMessage = selectedRouteOnly && selectedRoute && departures.length > 0
     ? t.noUpcomingSelectedRouteOnly
     : t.noUpcoming;
+
+  useEffect(() => {
+    setVisibleTimetableCount(STOP_TIMETABLE_BATCH_SIZE);
+  }, [stop.stop_id, schedule?.stopId, selectedRoute?.route_id, selectedDirectionId, selectedRouteOnly]);
+
+  function revealMoreTimetableRows(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    if (target.scrollTop + target.clientHeight < target.scrollHeight - 24) return;
+    setVisibleTimetableCount((count) => Math.min(count + STOP_TIMETABLE_BATCH_SIZE, timetableRows.length));
+  }
 
   return (
     <section className="detail-card stop-detail-card">
@@ -1654,10 +1667,10 @@ function SelectedStopDetail({
           <span>{t.selectedRouteOnly}</span>
         </label>
       </header>
-      <div className="stop-timetable" aria-label={t.upcomingTimetable}>
+      <div className="stop-timetable" aria-label={t.upcomingTimetable} onScroll={revealMoreTimetableRows}>
         {schedule?.loading && <p>{t.loadingUpcoming}</p>}
         {!schedule?.loading && timetableRows.length === 0 && <p>{emptyTimetableMessage}</p>}
-        {timetableRows.map(({ departure, route, vehicle, timing }) => {
+        {visibleTimetableRows.map(({ departure, route, vehicle, timing }) => {
           return (
             <article key={`${departure.trip_id}-${departure.stop_id}`}>
               {route ? (
