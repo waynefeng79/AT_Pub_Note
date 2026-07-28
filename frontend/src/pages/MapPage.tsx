@@ -1495,6 +1495,7 @@ export function MapPage({ session, onLogout }: Props) {
                   schedule={stopSchedule?.stopId === selectedMapItem.item.stop_id ? stopSchedule : null}
                   routes={routeItems}
                   selectedRoute={selectedRoute}
+                  selectedDirectionId={routeDirections[selectedDirectionIndex]?.direction_id ?? null}
                   selectedRouteOnly={stopPanelSelectedRouteOnly}
                   onSelectedRouteOnlyChange={changeStopPanelSelectedRouteOnly}
                   onSelectRoute={selectDepartureRoute}
@@ -1594,6 +1595,7 @@ function SelectedStopDetail({
   schedule,
   routes,
   selectedRoute,
+  selectedDirectionId,
   selectedRouteOnly,
   onSelectedRouteOnlyChange,
   onSelectRoute,
@@ -1604,6 +1606,7 @@ function SelectedStopDetail({
   schedule: StopSchedule | null;
   routes: RouteItem[];
   selectedRoute: RouteItem | null;
+  selectedDirectionId: number | null;
   selectedRouteOnly: boolean;
   onSelectedRouteOnlyChange: (value: boolean) => void;
   onSelectRoute: (route: RouteItem, departure: DepartureItem) => void;
@@ -1614,7 +1617,13 @@ function SelectedStopDetail({
   const now = Date.now();
   const departures = schedule?.departures ?? [];
   const timetableRows = departures
-    .filter((departure) => !selectedRouteOnly || !selectedRoute || departure.route_id === selectedRoute.route_id)
+    .filter((departure) => {
+      if (!selectedRouteOnly || !selectedRoute) return true;
+      if (departure.route_id !== selectedRoute.route_id) return false;
+      return selectedDirectionId == null ||
+        departure.direction_id == null ||
+        departure.direction_id === selectedDirectionId;
+    })
     .map((departure) => {
       const route = routes.find((item) => item.route_id === departure.route_id);
       const update = schedule?.updates.get(departure.trip_id);
