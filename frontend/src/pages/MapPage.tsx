@@ -6,10 +6,13 @@ import {
   Crosshair,
   Heart,
   LocateFixed,
+  Lock,
   LogOut,
+  RadioTower,
   Search,
   Star,
   UserRound,
+  Unlock,
   X
 } from 'lucide-react';
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson';
@@ -73,6 +76,13 @@ type StopSchedule = {
   serviceDate?: string;
 };
 
+type StopRouteFilter = {
+  stop: StopItem;
+  routeIds: string[];
+  selectedRouteId?: string;
+  selectedDirectionId?: number | null;
+};
+
 type PendingRouteFocus =
   | { type: 'route'; routeId: string; directionId?: number | null; tripId?: string | null }
   | { type: 'vehicle'; routeId: string; directionId?: number | null; vehicle: VehicleItem };
@@ -115,6 +125,20 @@ type RouteMapView =
       trunkGeometryKey?: string;
     };
 
+type MonitoredRouteData = {
+  route: RouteItem;
+  directionId: number | null;
+  shapes: RouteShapeRenderItem[];
+  stops: RouteStopRenderItem[];
+};
+
+type FocusedTripMapData = {
+  routeId: string;
+  tripId: string;
+  shapes: RouteShapeRenderItem[];
+  stops: RouteStopRenderItem[];
+};
+
 const AUCKLAND: [number, number] = [174.7633, -36.8485];
 const SELECTED_ROUTE_STORAGE_KEY = 'at-public-note:selected-route-id';
 const STOP_SELECTED_ROUTE_ONLY_STORAGE_KEY = 'at-public-note:stop-selected-route-only';
@@ -148,6 +172,11 @@ const UI_TEXT = {
     vehicleTypeFilter: 'Vehicle type filter',
     favourites: 'Favourites',
     noSavedRoutes: 'No saved routes',
+    activeRoutes: 'Active routes',
+    lockRoute: 'Lock selected route',
+    unlockRoute: 'Unlock selected route',
+    addToActiveRoutes: 'Monitor route',
+    removeFromActiveRoutes: 'Stop monitoring route',
     removeFromFavourites: 'Remove from favourites',
     addToFavourites: 'Add to favourites',
     noMatchingRoutes: 'No matching routes.',
@@ -217,6 +246,11 @@ const UI_TEXT = {
     vehicleTypeFilter: 'Tātari momo waka',
     favourites: 'Ngā makau',
     noSavedRoutes: 'Kāore he ararere kua tiakina',
+    activeRoutes: 'Ngā ararere hohe',
+    lockRoute: 'Maukati te ararere kua tīpakohia',
+    unlockRoute: 'Wewete i te ararere kua tīpakohia',
+    addToActiveRoutes: 'Aroturuki ararere',
+    removeFromActiveRoutes: 'Kati te aroturuki ararere',
     removeFromFavourites: 'Tangohia i ngā makau',
     addToFavourites: 'Tāpiri ki ngā makau',
     noMatchingRoutes: 'Kāore he ararere ōrite.',
@@ -445,10 +479,12 @@ function focusedTripShapeRenderPlan(
   shapeColours?: Map<string, string>
 ): RouteShapeRenderPlan {
   const source = uniqueShapes(patterns.map((pattern) => pattern.shape).filter((shape): shape is RouteShape => Boolean(shape)));
-  const shape = source[0] ?? uniqueShapes(fallback)[0] ?? null;
+  const fallbackShapes = uniqueShapes(fallback);
+  const shape = source[0] ?? fallbackShapes[0] ?? null;
   if (!shape) return { shapes: [], colourByGeometry: shapeColours ?? new Map() };
   const key = shapeGeometryKey(shape);
-  const lineColor = shapeColours?.get(key) ?? branchColourForGeometry(key);
+  const isRouteGeometry = fallbackShapes.some((fallbackShape) => shapeGeometryKey(fallbackShape) === key);
+  const lineColor = isRouteGeometry ? colour(route) : shapeColours?.get(key) ?? branchColourForGeometry(key);
   const colourByGeometry = new Map(shapeColours ?? []);
   colourByGeometry.set(key, lineColor);
   return { shapes: [{ ...shape, line_color: lineColor }], colourByGeometry };
@@ -583,20 +619,23 @@ function ensureVehicleImage(mapInstance: maplibregl.Map, route: RouteItem | null
   return imageId;
 }
 
-function vehicleFeatures(items: VehicleItem[], route: RouteItem | null = null): Feature<Point>[] {
+function vehicleFeatures(items: VehicleItem[], routeLookup: Map<string, RouteItem>, fallbackRoute: RouteItem | null = null): Feature<Point>[] {
   return items
     .filter((item) => item.position.latitude != null && item.position.longitude != null)
-    .map((item) => ({
-      type: 'Feature',
-      properties: {
-        vehicle_key: vehicleIdentityKey(item),
-        id: item.vehicle_id,
-        trip_id: item.trip_id,
-        bearing: item.position.bearing ?? 0,
-        mode_image: vehicleImageId(route, isExtraServiceVehicle(item))
-      },
-      geometry: { type: 'Point', coordinates: [item.position.longitude!, item.position.latitude!] }
-    }));
+    .map((item) => {
+      const route = routeLookup.get(item.route_id) ?? fallbackRoute;
+      return {
+        type: 'Feature',
+        properties: {
+          vehicle_key: vehicleIdentityKey(item),
+          id: item.vehicle_id,
+          trip_id: item.trip_id,
+          bearing: item.position.bearing ?? 0,
+          mode_image: vehicleImageId(route, isExtraServiceVehicle(item))
+        },
+        geometry: { type: 'Point', coordinates: [item.position.longitude!, item.position.latitude!] }
+      };
+    });
 }
 
 function activeTripIds(vehicles: VehicleItem[], updates: TripUpdateItem[]) {
@@ -618,6 +657,21 @@ function uniqueTripIds(...groups: string[][]) {
     }
   }
   return Array.from(ids).slice(0, 24);
+}
+
+function mergeByKey<T>(items: T[], keyForItem: (item: T) => string) {
+  return Array.from(new Map(items.map((item) => [keyForItem(item), item])).values());
+}
+
+function alertIdentityKey(alert: AlertItem) {
+  return [
+    alert.alert_id,
+    alert.header,
+    alert.description,
+    alert.cause,
+    alert.effect,
+    (alert.route_ids ?? []).join(',')
+  ].join('|');
 }
 
 function stopsFromPatterns(
@@ -722,14 +776,22 @@ export function MapPage({ session, onLogout }: Props) {
   const stopScheduleRequestId = useRef(0);
   const feedRef = useRef<FeedResponse | null>(null);
   const selectedRouteRef = useRef<RouteItem | null>(null);
+  const activeRouteIdsRef = useRef<string[]>([]);
+  const lockedRouteIdsRef = useRef<string[]>([]);
+  const activeRouteDirectionsRef = useRef<Record<string, number | null>>({});
+  const monitoredRouteDataRef = useRef(new Map<string, MonitoredRouteData>());
   const selectedDirectionIdRef = useRef<number | null>(null);
   const selectedMapItemRef = useRef<SelectedMapItem | null>(null);
   const selectedStopHighlightRef = useRef<StopItem | null>(null);
   const stopPanelSelectedRouteOnlyRef = useRef(storedStopSelectedRouteOnly());
-  const stopRouteFilterRef = useRef<{ stop: StopItem; routeIds: string[] } | null>(null);
+  const stopRouteFilterRef = useRef<StopRouteFilter | null>(null);
+  const routeItemsRef = useRef<RouteItem[]>([]);
   const stopsRef = useRef<StopItem[]>([]);
+  const mapStopsRef = useRef<StopItem[]>([]);
   const vehicleItemsRef = useRef<VehicleItem[]>([]);
   const pendingRouteFocusRef = useRef<PendingRouteFocus | null>(null);
+  const tripFocusRequestId = useRef(0);
+  const focusedTripMapDataRef = useRef<FocusedTripMapData | null>(null);
   const routeMapViewRef = useRef<RouteMapView | null>(null);
   const startupLocateStarted = useRef(false);
   const mapBackgroundClickBound = useRef(false);
@@ -738,6 +800,9 @@ export function MapPage({ session, onLogout }: Props) {
   const [feed, setFeed] = useState<FeedResponse | null>(null);
   const [routeItems, setRouteItems] = useState<RouteItem[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<RouteItem | null>(null);
+  const [activeRouteIds, setActiveRouteIds] = useState<string[]>([]);
+  const [lockedRouteIds, setLockedRouteIds] = useState<string[]>([]);
+  const [activeRouteDirections, setActiveRouteDirections] = useState<Record<string, number | null>>({});
   const [query, setQuery] = useState('');
   const [routeModeFilter, setRouteModeFilter] = useState<RouteModeFilter>('all');
   const [language, setLanguage] = useState<UiLanguage>('en');
@@ -754,7 +819,7 @@ export function MapPage({ session, onLogout }: Props) {
   const [selectedVehicleHighlight, setSelectedVehicleHighlight] = useState<VehicleItem | null>(null);
   const [stopSchedule, setStopSchedule] = useState<StopSchedule | null>(null);
   const [stopPanelSelectedRouteOnly, setStopPanelSelectedRouteOnly] = useState(storedStopSelectedRouteOnly);
-  const [stopRouteFilter, setStopRouteFilter] = useState<{ stop: StopItem; routeIds: string[] } | null>(null);
+  const [stopRouteFilter, setStopRouteFilter] = useState<StopRouteFilter | null>(null);
   const [routePickerOpen, setRoutePickerOpen] = useState(false);
   const [favourites, setFavourites] = useState<string[]>([]);
   const [message, setMessage] = useState('Loading active feed');
@@ -765,11 +830,15 @@ export function MapPage({ session, onLogout }: Props) {
 
   feedRef.current = feed;
   selectedRouteRef.current = selectedRoute;
+  activeRouteIdsRef.current = activeRouteIds;
+  lockedRouteIdsRef.current = lockedRouteIds;
+  activeRouteDirectionsRef.current = activeRouteDirections;
   selectedDirectionIdRef.current = routeDirections[selectedDirectionIndex]?.direction_id ?? null;
   selectedMapItemRef.current = selectedMapItem;
   selectedStopHighlightRef.current = selectedStopHighlight;
   stopPanelSelectedRouteOnlyRef.current = stopPanelSelectedRouteOnly;
   stopRouteFilterRef.current = stopRouteFilter;
+  routeItemsRef.current = routeItems;
   stopsRef.current = stops;
 
   const visibleRoutes = useMemo(() => {
@@ -788,6 +857,19 @@ export function MapPage({ session, onLogout }: Props) {
       .filter((route): route is RouteItem => Boolean(route)),
     [favourites, routeItems]
   );
+
+  const activeRouteItems = useMemo(
+    () => activeRouteIds
+      .map((routeId) => routeItems.find((route) => route.route_id === routeId))
+      .filter((route): route is RouteItem => Boolean(route)),
+    [activeRouteIds, routeItems]
+  );
+  const mapRouteItems = activeRouteItems.length > 0
+    ? activeRouteItems
+    : selectedRoute
+      ? [selectedRoute]
+      : [];
+  const routeById = useMemo(() => new Map(routeItems.map((route) => [route.route_id, route])), [routeItems]);
 
   const tripUpdatesByTrip = useMemo(
     () => new Map(tripUpdateItems.map((item) => [item.trip_id, item])),
@@ -873,9 +955,10 @@ export function MapPage({ session, onLogout }: Props) {
         setRouteItems(routeResult.items);
         setFavourites(favResult.route_ids);
         const savedRouteId = storedSelectedRouteId();
-        setSelectedRoute(
-          routeResult.items.find((route) => route.route_id === savedRouteId) ?? routeResult.items[0] ?? null
-        );
+        const initialRoute = routeResult.items.find((route) => route.route_id === savedRouteId) ?? routeResult.items[0] ?? null;
+        setSelectedRoute(initialRoute);
+        setActiveRouteIds(initialRoute ? [initialRoute.route_id] : []);
+        setActiveRouteDirections(initialRoute ? { [initialRoute.route_id]: null } : {});
         setMessage(`${routeResult.page.total} routes available`);
       } catch (err) {
         if (isAbortError(err)) return;
@@ -933,10 +1016,11 @@ export function MapPage({ session, onLogout }: Props) {
     if (!feed || !selectedRoute) return;
     const controller = new AbortController();
     let reconnectTimer: number | undefined;
+    const routeIds = activeRouteIds.length > 0 ? activeRouteIds : [selectedRoute.route_id];
 
     const connect = async () => {
       try {
-        await streamRealtime([selectedRoute.route_id], (event) => {
+        await streamRealtime(routeIds, (event) => {
           if (event.feed_version === feed.feed_version) {
             void refreshRealtime(false, selectedRoute.route_id, feed.feed_version);
           }
@@ -953,13 +1037,34 @@ export function MapPage({ session, onLogout }: Props) {
       controller.abort();
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
     };
-  }, [feed?.feed_version, selectedRoute?.route_id, sseReconnectToken]);
+  }, [feed?.feed_version, selectedRoute?.route_id, activeRouteIds.join(','), sseReconnectToken]);
 
   useEffect(() => {
     if (!feed) return;
     const timer = window.setInterval(() => void refreshActiveFeed(), 60_000);
     return () => window.clearInterval(timer);
   }, [feed?.feed_version]);
+
+  useEffect(() => {
+    if (!feed || !selectedRoute || activeRouteIds.length === 0) return;
+    void refreshRealtime(false, selectedRoute.route_id, feed.feed_version);
+  }, [feed?.feed_version, selectedRoute?.route_id, activeRouteIds.join(',')]);
+
+  useEffect(() => {
+    if (!feed || !selectedRoute || activeRouteIds.length === 0) return;
+    const missingRoutes = activeRouteIds
+      .filter((routeId) => routeId !== selectedRoute.route_id && !monitoredRouteDataRef.current.has(routeId))
+      .map((routeId) => routeItems.find((route) => route.route_id === routeId))
+      .filter((route): route is RouteItem => Boolean(route));
+    if (missingRoutes.length === 0) {
+      renderMonitoredMap({ fitBounds: false });
+      return;
+    }
+    void Promise.all(missingRoutes.map((route) => loadMonitoredRouteData(
+      route,
+      activeRouteDirectionsRef.current[route.route_id] ?? null
+    )));
+  }, [feed?.feed_version, selectedRoute?.route_id, activeRouteIds.join(','), routeItems]);
 
   function commitVehicleItems(items: VehicleItem[]) {
     const dedupedItems = dedupeVehicleItems(items);
@@ -981,7 +1086,25 @@ export function MapPage({ session, onLogout }: Props) {
       const routeResult = await allRoutes(active.feed_version);
       setFeed(active);
       setRouteItems(routeResult.items);
-      setSelectedRoute((current) => routeResult.items.find((route) => route.route_id === current?.route_id) ?? routeResult.items[0] ?? null);
+      const nextSelectedRoute = routeResult.items.find((route) => route.route_id === selectedRouteRef.current?.route_id)
+        ?? routeResult.items[0]
+        ?? null;
+      setSelectedRoute(nextSelectedRoute);
+      setActiveRouteIds((current) => {
+        const available = new Set(routeResult.items.map((route) => route.route_id));
+        const next = current.filter((routeId) => available.has(routeId));
+        if (nextSelectedRoute && !next.includes(nextSelectedRoute.route_id)) next.unshift(nextSelectedRoute.route_id);
+        return next;
+      });
+      setActiveRouteDirections((current) => {
+        const available = new Set(routeResult.items.map((route) => route.route_id));
+        return Object.fromEntries(Object.entries(current).filter(([routeId]) => available.has(routeId)));
+      });
+      setLockedRouteIds((current) => {
+        const available = new Set(routeResult.items.map((route) => route.route_id));
+        return current.filter((routeId) => available.has(routeId));
+      });
+      monitoredRouteDataRef.current.clear();
       commitVehicleItems([]);
       setAlertItems([]);
       setTripUpdateItems([]);
@@ -1025,7 +1148,13 @@ export function MapPage({ session, onLogout }: Props) {
       const primaryStops = primaryDirection?.stops ?? [];
       const primaryShapes = shapesForDirection(shapeResult.items, primaryDirection);
       const realtimeMatches = (version: string | null | undefined) => version === feedVersion;
-      const currentVehicles = realtimeMatches(vehicleResult.feed_version) ? vehicleResult.items : [];
+      const preservedActiveVehicles = vehicleItemsRef.current.filter((vehicle) => (
+        vehicle.route_id !== route.route_id && activeRouteIdsRef.current.includes(vehicle.route_id)
+      ));
+      const currentVehicles = dedupeVehicleItems([
+        ...preservedActiveVehicles,
+        ...(realtimeMatches(vehicleResult.feed_version) ? vehicleResult.items : [])
+      ]);
       const currentAlerts = realtimeMatches(alertResult.feed_version) ? alertResult.items.slice(0, 10) : [];
       const currentTripUpdates = realtimeMatches(tripUpdateResult.feed_version) ? tripUpdateResult.items : [];
       const focusedTripId = pendingFocus?.type === 'vehicle' ? pendingFocus.vehicle.trip_id : pendingFocus?.tripId;
@@ -1044,17 +1173,28 @@ export function MapPage({ session, onLogout }: Props) {
         shapePlan.colourByGeometry,
         colour(route)
       );
+      focusedTripMapDataRef.current = focusedTripId
+        ? { routeId: route.route_id, tripId: focusedTripId, shapes: shapePlan.shapes, stops: mapStops }
+        : null;
       setRouteShapesData(shapeResult.items);
       setRouteDirections(availableDirections);
       setSelectedDirectionIndex(primaryDirectionIndex);
       stopsRef.current = mapStops;
       setStops(mapStops);
+      monitoredRouteDataRef.current.set(route.route_id, {
+        route,
+        directionId: primaryDirectionId,
+        shapes: shapePlan.shapes,
+        stops: mapStops
+      });
+      setActiveRouteDirections((current) => ({ ...current, [route.route_id]: primaryDirectionId }));
       commitVehicleItems(currentVehicles);
       setAlertItems(currentAlerts);
       setTripUpdateItems(currentTripUpdates);
       const highlightedStop = selectedMapItemRef.current?.type === 'stop'
         ? selectedMapItemRef.current.item
         : selectedStopHighlightRef.current;
+      const preserveStopSelection = selectedMapItemRef.current?.type === 'stop';
       if (pendingFocus?.type === 'vehicle') {
         setSelectedVehicleHighlight(pendingFocus.vehicle);
         setSelectedStopHighlight(null);
@@ -1062,8 +1202,10 @@ export function MapPage({ session, onLogout }: Props) {
         pendingRouteFocusRef.current = null;
       } else if (pendingFocus?.type === 'route') {
         setSelectedVehicleHighlight(null);
-        setSelectedStopHighlight(null);
-        setSelectedMapItem({ type: 'route', item: route });
+        if (!preserveStopSelection) {
+          setSelectedStopHighlight(null);
+          setSelectedMapItem({ type: 'route', item: route });
+        }
         pendingRouteFocusRef.current = null;
       } else if (!isPortraitViewport() || selectedMapItemRef.current?.type === 'route') {
         setSelectedMapItem({ type: 'route', item: route });
@@ -1085,7 +1227,7 @@ export function MapPage({ session, onLogout }: Props) {
             shapeColours: shapePlan.colourByGeometry,
             trunkGeometryKey: shapePlan.trunkGeometryKey
           };
-      const stopToHighlight = pendingFocus ? null : highlightedStop;
+      const stopToHighlight = pendingFocus && !preserveStopSelection ? null : highlightedStop;
       setSelectedStopHighlight(stopToHighlight);
       renderMap(route, shapePlan.shapes, mapStops, stopToHighlight);
       setMessage(
@@ -1125,6 +1267,45 @@ export function MapPage({ session, onLogout }: Props) {
     return patterns.filter((pattern) => pattern.shape || (pattern.direction && pattern.direction.stops.length > 0));
   }
 
+  async function loadMonitoredRouteData(route: RouteItem, requestedDirectionId?: number | null) {
+    const feedVersion = feedRef.current?.feed_version;
+    if (!feedVersion) return;
+    try {
+      const [shapeResult, stopResult] = await Promise.all([
+        routeShapes(feedVersion, route.route_id),
+        routeStops(feedVersion, route.route_id)
+      ]);
+      if (feedRef.current?.feed_version !== feedVersion) return;
+      if (
+        routeMapViewRef.current?.routeId === route.route_id &&
+        routeMapViewRef.current.type === 'trip'
+      ) return;
+      const directions = stopResult.directions.filter((direction) => direction.stops.length > 0);
+      const direction = directions.find((item) => item.direction_id === requestedDirectionId) ?? directions[0] ?? null;
+      const directionId = direction?.direction_id ?? null;
+      const plan = routeShapeRenderPlan(route, [], shapesForDirection(shapeResult.items, direction));
+      const routeData: MonitoredRouteData = {
+        route,
+        directionId,
+        shapes: plan.shapes,
+        stops: (direction?.stops ?? []).map((stop) => ({ ...stop, line_color: colour(route) }))
+      };
+      monitoredRouteDataRef.current.set(route.route_id, routeData);
+      setActiveRouteDirections((current) => ({ ...current, [route.route_id]: directionId }));
+      renderMonitoredMap();
+    } catch {
+      // The focused route remains usable if a secondary route cannot load.
+    }
+  }
+
+  function renderMonitoredMap(options: { fitBounds?: boolean } = { fitBounds: false }) {
+    const route = selectedRouteRef.current;
+    const data = route ? monitoredRouteDataRef.current.get(route.route_id) : null;
+    if (!route || !data) return;
+    if (routeMapViewRef.current?.routeId === route.route_id && routeMapViewRef.current.type === 'trip') return;
+    renderMap(route, data.shapes, data.stops, selectedStopHighlightRef.current, options);
+  }
+
   function renderMap(
     route: RouteItem,
     shapes: RouteShapeRenderItem[],
@@ -1137,28 +1318,54 @@ export function MapPage({ session, onLogout }: Props) {
 
     const paintRoute = () => {
       if (selectedRouteRef.current?.route_id !== route.route_id) return;
-      const shapeFeatures: Feature<LineString>[] = shapes.map((shape, index) => ({
+      const activeView = routeMapViewRef.current;
+      const focusedTrip = activeView?.type === 'trip' && activeView.routeId === route.route_id
+        ? focusedTripMapDataRef.current?.routeId === route.route_id && focusedTripMapDataRef.current.tripId === activeView.tripId
+          ? focusedTripMapDataRef.current
+          : null
+        : null;
+      if (activeView?.type === 'trip' && activeView.routeId === route.route_id && !focusedTrip) return;
+      const effectiveShapes = focusedTrip?.shapes ?? shapes;
+      const effectiveStops = focusedTrip?.stops ?? routeStopItems;
+      const monitoredEntries = activeRouteIdsRef.current
+        .map((routeId) => monitoredRouteDataRef.current.get(routeId))
+        .filter((item): item is MonitoredRouteData => Boolean(item));
+      const selectedEntry: MonitoredRouteData = {
+        route,
+        directionId: activeRouteDirectionsRef.current[route.route_id] ?? null,
+        shapes: effectiveShapes,
+        stops: effectiveStops
+      };
+      const entries = monitoredEntries.some((item) => item.route.route_id === route.route_id)
+        ? monitoredEntries.map((item) => item.route.route_id === route.route_id ? selectedEntry : item)
+        : [selectedEntry, ...monitoredEntries];
+      const shapeFeatures: Feature<LineString>[] = entries.flatMap((entry) => entry.shapes.map((shape, index) => ({
         type: 'Feature',
         properties: {
+          route_id: entry.route.route_id,
+          selected_route: entry.route.route_id === route.route_id,
           shape_id: shape.shape_id,
           trip_id: shape.representative_trip_id ?? '',
-          line_color: shape.line_color ?? branchColour(route, index)
+          line_color: shape.line_color ?? branchColour(entry.route, index)
         },
         geometry: shape.geometry
-      }));
-      const stopOffsets = offsetCoincidentStops(routeStopItems);
-      const stopFeatures: Feature<Point>[] = routeStopItems.map((stop) => ({
+      })));
+      const allStops = entries.flatMap((entry) => entry.stops);
+      mapStopsRef.current = allStops;
+      stopsRef.current = allStops;
+      const stopOffsets = offsetCoincidentStops(allStops);
+      const stopFeatures: Feature<Point>[] = entries.flatMap((entry) => entry.stops.map((stop) => ({
         type: 'Feature',
-        properties: { stop_id: stop.stop_id, name: stop.stop_name },
+        properties: { route_id: entry.route.route_id, stop_id: stop.stop_id, name: stop.stop_name },
         geometry: { type: 'Point', coordinates: stopOffsets.get(stop.stop_id) ?? [stop.stop_lon, stop.stop_lat] }
-      }));
+      })));
       const stopConnectorFeatures: Feature<LineString>[] = [];
-      for (const stop of routeStopItems) {
+      for (const entry of entries) for (const stop of entry.stops) {
         const offset = stopOffsets.get(stop.stop_id);
         if (!offset) continue;
         stopConnectorFeatures.push({
           type: 'Feature',
-          properties: { stop_id: stop.stop_id, line_color: stop.line_color ?? colour(route) },
+          properties: { route_id: entry.route.route_id, stop_id: stop.stop_id, line_color: stop.line_color ?? colour(entry.route) },
           geometry: {
             type: 'LineString',
             coordinates: [[stop.stop_lon, stop.stop_lat], offset]
@@ -1168,9 +1375,13 @@ export function MapPage({ session, onLogout }: Props) {
       const routeCollection: FeatureCollection<LineString> = { type: 'FeatureCollection', features: shapeFeatures };
       const stopCollection: FeatureCollection<Point> = { type: 'FeatureCollection', features: stopFeatures };
       const stopConnectorCollection: FeatureCollection<LineString> = { type: 'FeatureCollection', features: stopConnectorFeatures };
+      for (const item of routeItemsRef.current) {
+        ensureVehicleImage(instance, item);
+        ensureVehicleImage(instance, item, true);
+      }
       ensureVehicleImage(instance, route);
       ensureVehicleImage(instance, route, true);
-      const vehicleCollection: FeatureCollection<Point> = { type: 'FeatureCollection', features: vehicleFeatures(vehicleItemsRef.current, route) };
+      const vehicleCollection: FeatureCollection<Point> = { type: 'FeatureCollection', features: vehicleFeatures(vehicleItemsRef.current, routeById, route) };
 
       upsertSource(instance, 'route-shapes', routeCollection);
       upsertSource(instance, 'route-stop-connectors', stopConnectorCollection);
@@ -1182,10 +1393,16 @@ export function MapPage({ session, onLogout }: Props) {
           id: 'route-line',
           type: 'line',
           source: 'route-shapes',
-          paint: { 'line-color': ['get', 'line_color'], 'line-width': 4.5, 'line-opacity': 0.88 }
+          paint: {
+            'line-color': ['get', 'line_color'],
+            'line-width': ['case', ['==', ['get', 'selected_route'], true], 6, 4],
+            'line-opacity': ['case', ['==', ['get', 'selected_route'], true], 0.96, 0.68]
+          }
         });
       } else {
         instance.setPaintProperty('route-line', 'line-color', ['get', 'line_color']);
+        instance.setPaintProperty('route-line', 'line-width', ['case', ['==', ['get', 'selected_route'], true], 6, 4]);
+        instance.setPaintProperty('route-line', 'line-opacity', ['case', ['==', ['get', 'selected_route'], true], 0.96, 0.68]);
       }
 
       if (!instance.getLayer('stop-connectors')) {
@@ -1220,8 +1437,9 @@ export function MapPage({ session, onLogout }: Props) {
           const feature = event.features?.[0];
           if (!feature || feature.geometry.type !== 'Point') return;
           const stopId = String(feature.properties?.stop_id ?? '');
-          const stop = stopsRef.current.find((item) => item.stop_id === stopId);
-          if (stop) void selectStopAndFilterRoutes(stop, 'map');
+          const routeId = String(feature.properties?.route_id ?? '');
+          const stop = mapStopsRef.current.find((item) => item.stop_id === stopId);
+          if (stop) void selectStopAndFilterRoutes(stop, 'map', routeId || undefined);
         });
         instance.on('mouseenter', 'stop-points', () => {
           instance.getCanvas().style.cursor = 'pointer';
@@ -1284,7 +1502,7 @@ export function MapPage({ session, onLogout }: Props) {
 
       renderSelectedStopHighlight(highlightedStop, stopOffsets);
 
-      const coordinates = shapes.flatMap((shape) => shape.geometry.coordinates);
+      const coordinates = shapeFeatures.flatMap((shape) => shape.geometry.coordinates);
       if (options.fitBounds !== false && coordinates.length) {
         const bounds = coordinates.reduce(
           (box, coord) => box.extend(coord as [number, number]),
@@ -1386,9 +1604,16 @@ export function MapPage({ session, onLogout }: Props) {
     if (!instance?.isStyleLoaded()) return;
     const source = instance.getSource('route-vehicles') as maplibregl.GeoJSONSource | undefined;
     if (source) {
+      const lookup = new Map(routeItemsRef.current.map((route) => [route.route_id, route]));
+      for (const item of activeRouteIdsRef.current) {
+        const route = lookup.get(item);
+        if (!route) continue;
+        ensureVehicleImage(instance, route);
+        ensureVehicleImage(instance, route, true);
+      }
       ensureVehicleImage(instance, selectedRouteRef.current);
       ensureVehicleImage(instance, selectedRouteRef.current, true);
-      source.setData({ type: 'FeatureCollection', features: vehicleFeatures(items, selectedRouteRef.current) });
+      source.setData({ type: 'FeatureCollection', features: vehicleFeatures(items, lookup, selectedRouteRef.current) });
     }
   }
 
@@ -1397,7 +1622,10 @@ export function MapPage({ session, onLogout }: Props) {
     const direction = routeDirections[index];
     if (!direction) return;
     selectedDirectionIdRef.current = direction.direction_id ?? null;
+    tripFocusRequestId.current += 1;
+    focusedTripMapDataRef.current = null;
     setSelectedDirectionIndex(index);
+    setActiveRouteDirections((current) => ({ ...current, [selectedRoute.route_id]: direction.direction_id ?? null }));
     stopsRef.current = [];
     setStops([]);
     commitVehicleItems([]);
@@ -1408,6 +1636,7 @@ export function MapPage({ session, onLogout }: Props) {
     setStopSchedule(null);
     if (feed?.feed_version) void refreshRealtime(true, selectedRoute.route_id, feed.feed_version, direction.direction_id);
     setMessage(`${directionLabel(direction, index)} selected`);
+    void loadMonitoredRouteData(selectedRoute, direction.direction_id);
   }
 
   async function focusTripPattern(
@@ -1418,13 +1647,34 @@ export function MapPage({ session, onLogout }: Props) {
   ) {
     const feedVersion = feedRef.current?.feed_version;
     if (!feedVersion) return;
+    const requestId = ++tripFocusRequestId.current;
+    const previousView = routeMapViewRef.current;
+    routeMapViewRef.current = {
+      type: 'trip',
+      routeId: route.route_id,
+      directionId,
+      tripId,
+      shapeColours: previousView?.routeId === route.route_id ? previousView.shapeColours : undefined,
+      trunkGeometryKey: previousView?.routeId === route.route_id ? previousView.trunkGeometryKey : undefined
+    };
     const patterns = await loadTripPatterns(feedVersion, [tripId]);
+    if (
+      requestId !== tripFocusRequestId.current ||
+      selectedRouteRef.current?.route_id !== route.route_id ||
+      feedRef.current?.feed_version !== feedVersion
+    ) return;
     const originalShapes = shapesForDirection(routeShapesData, { direction_id: directionId ?? null } as RouteDirection);
     const existingShapeColours = routeMapViewRef.current?.routeId === route.route_id
       ? routeMapViewRef.current.shapeColours
       : undefined;
     const shapePlan = focusedTripShapeRenderPlan(route, patterns, originalShapes, existingShapeColours);
     const stopsForTrip = stopsFromPatterns(patterns, stops, shapePlan.colourByGeometry, colour(route));
+    focusedTripMapDataRef.current = {
+      routeId: route.route_id,
+      tripId,
+      shapes: shapePlan.shapes,
+      stops: stopsForTrip
+    };
     routeMapViewRef.current = {
       type: 'trip',
       routeId: route.route_id,
@@ -1459,21 +1709,118 @@ export function MapPage({ session, onLogout }: Props) {
   function chooseRoute(route: RouteItem) {
     setRoutePickerOpen(false);
     selectedStopHighlightRef.current = null;
+    const knownDirectionId = activeRouteDirectionsRef.current[route.route_id];
+    pendingRouteFocusRef.current = {
+      type: 'route',
+      routeId: route.route_id,
+      directionId: knownDirectionId ?? null
+    };
     setSelectedRoute(route);
+    retainLockedRoutesAndSelect(route);
     setSelectedMapItem({ type: 'route', item: route });
     setSelectedStopHighlight(null);
     setSelectedVehicleHighlight(null);
     setStopSchedule(null);
-    routeMapViewRef.current = { type: 'direction', routeId: route.route_id, directionId: null };
+    tripFocusRequestId.current += 1;
+    focusedTripMapDataRef.current = null;
+    routeMapViewRef.current = { type: 'direction', routeId: route.route_id, directionId: knownDirectionId ?? null };
+  }
+
+  function chooseFavouriteRoute(route: RouteItem) {
+    chooseRoute(route);
+  }
+
+  function retainLockedRoutesAndSelect(
+    route: RouteItem,
+    directionId?: number | null,
+    options: { tripFocused?: boolean } = {}
+  ) {
+    const keep = new Set([...lockedRouteIdsRef.current, route.route_id]);
+    for (const routeId of activeRouteIdsRef.current) {
+      if (!keep.has(routeId)) monitoredRouteDataRef.current.delete(routeId);
+    }
+    setActiveRouteIds(Array.from(keep));
+    setActiveRouteDirections((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([routeId]) => keep.has(routeId)));
+      if (!(route.route_id in next) || directionId !== undefined) next[route.route_id] = directionId ?? null;
+      return next;
+    });
+    if (!options.tripFocused && (!monitoredRouteDataRef.current.has(route.route_id) || directionId !== undefined)) {
+      void loadMonitoredRouteData(route, directionId);
+    }
+    if (!options.tripFocused) window.setTimeout(() => renderMonitoredMap(), 0);
+  }
+
+  function toggleRouteLock(route: RouteItem) {
+    const isLocked = lockedRouteIdsRef.current.includes(route.route_id);
+    setLockedRouteIds((current) => isLocked
+      ? current.filter((routeId) => routeId !== route.route_id)
+      : [...current, route.route_id]);
+    setActiveRouteIds((current) => current.includes(route.route_id) ? current : [...current, route.route_id]);
+    if (isLocked && selectedRouteRef.current?.route_id !== route.route_id) {
+      monitoredRouteDataRef.current.delete(route.route_id);
+      setActiveRouteIds((current) => current.filter((routeId) => routeId !== route.route_id));
+      setActiveRouteDirections((current) => {
+        const next = { ...current };
+        delete next[route.route_id];
+        return next;
+      });
+      window.setTimeout(() => renderMonitoredMap(), 0);
+    }
+  }
+
+  function toggleActiveRoute(route: RouteItem) {
+    setActiveRouteIds((current) => {
+      if (!current.includes(route.route_id)) {
+        const directionId = route.route_id === selectedRouteRef.current?.route_id
+          ? selectedDirectionIdRef.current
+          : null;
+        setActiveRouteDirections((directions) => ({ ...directions, [route.route_id]: directionId }));
+        void loadMonitoredRouteData(route, directionId);
+        return [...current, route.route_id];
+      }
+      if (route.route_id === selectedRouteRef.current?.route_id) return current;
+      monitoredRouteDataRef.current.delete(route.route_id);
+      setLockedRouteIds((locked) => locked.filter((routeId) => routeId !== route.route_id));
+      setActiveRouteDirections((directions) => {
+        const next = { ...directions };
+        delete next[route.route_id];
+        return next;
+      });
+      window.setTimeout(() => renderMonitoredMap(), 0);
+      return current.filter((routeId) => routeId !== route.route_id);
+    });
   }
 
   function selectVehicle(vehicle: VehicleItem) {
     setRoutePickerOpen(false);
+    focusedTripMapDataRef.current = null;
     setSelectedVehicleHighlight(vehicle);
     setSelectedStopHighlight(null);
-    setSelectedMapItem({ type: 'vehicle', item: vehicle });
-    const route = selectedRouteRef.current;
-    if (route && vehicle.trip_id) {
+    const selection: SelectedMapItem = { type: 'vehicle', item: vehicle };
+    selectedMapItemRef.current = selection;
+    setSelectedMapItem(selection);
+    const route = routeItemsRef.current.find((item) => item.route_id === vehicle.route_id) ?? selectedRouteRef.current;
+    if (!route) return;
+    if (selectedRouteRef.current?.route_id !== route.route_id) {
+      pendingRouteFocusRef.current = {
+        type: 'vehicle',
+        routeId: route.route_id,
+        directionId: vehicle.direction_id,
+        vehicle
+      };
+      retainLockedRoutesAndSelect(route, undefined, { tripFocused: true });
+      setActiveRouteDirections((current) => ({ ...current, [route.route_id]: vehicle.direction_id ?? null }));
+      routeMapViewRef.current = {
+        type: 'trip',
+        routeId: route.route_id,
+        directionId: vehicle.direction_id,
+        tripId: vehicle.trip_id
+      };
+      setSelectedRoute(route);
+      return;
+    }
+    if (vehicle.trip_id) {
       void focusTripPattern(route, vehicle.trip_id, vehicle.direction_id, vehicle);
     }
   }
@@ -1497,6 +1844,8 @@ export function MapPage({ session, onLogout }: Props) {
       void focusTripPattern(route, departure.trip_id, departure.direction_id);
       return;
     }
+    retainLockedRoutesAndSelect(route, undefined, { tripFocused: true });
+    setActiveRouteDirections((current) => ({ ...current, [route.route_id]: departure.direction_id ?? null }));
     setSelectedRoute(route);
   }
 
@@ -1521,6 +1870,17 @@ export function MapPage({ session, onLogout }: Props) {
       selectVehicle(vehicle);
       return;
     }
+    retainLockedRoutesAndSelect(route, undefined, { tripFocused: true });
+    setActiveRouteDirections((current) => ({
+      ...current,
+      [route.route_id]: vehicle.direction_id ?? departure.direction_id ?? null
+    }));
+    routeMapViewRef.current = {
+      type: 'trip',
+      routeId: route.route_id,
+      directionId: vehicle.direction_id ?? departure.direction_id,
+      tripId: vehicle.trip_id
+    };
     setSelectedRoute(route);
   }
 
@@ -1540,19 +1900,44 @@ export function MapPage({ session, onLogout }: Props) {
     if (!expectedRouteId || !expectedFeedVersion) return;
     if (showBusy) setBusy(true);
     try {
-      const [vehicleResult, alertResult, tripUpdateResult] = await Promise.all([
+      const activeRouteIds = activeRouteIdsRef.current.includes(expectedRouteId)
+        ? activeRouteIdsRef.current
+        : [expectedRouteId, ...activeRouteIdsRef.current];
+      const otherRouteIds = activeRouteIds.filter((routeId) => routeId !== expectedRouteId);
+      const [selectedVehicleResult, selectedAlertResult, selectedTripUpdateResult, otherVehicleResults, otherAlertResult, otherTripUpdateResult] = await Promise.all([
         vehicles([expectedRouteId], expectedDirectionId),
         alerts([expectedRouteId]),
-        tripUpdates([expectedRouteId], [], [], expectedDirectionId)
+        tripUpdates([expectedRouteId], [], [], expectedDirectionId),
+        Promise.all(otherRouteIds.map((routeId) => vehicles([routeId], activeRouteDirectionsRef.current[routeId] ?? null))),
+        otherRouteIds.length ? alerts(otherRouteIds) : Promise.resolve(null),
+        otherRouteIds.length ? tripUpdates(otherRouteIds) : Promise.resolve(null)
       ]);
       if (
         selectedRouteRef.current?.route_id !== expectedRouteId ||
         feedRef.current?.feed_version !== expectedFeedVersion ||
         selectedDirectionIdRef.current !== expectedDirectionId
       ) return;
-      const currentVehicles = vehicleResult.feed_version === expectedFeedVersion ? vehicleResult.items : [];
-      const currentAlerts = alertResult.feed_version === expectedFeedVersion ? alertResult.items.slice(0, 10) : [];
-      const currentTripUpdates = tripUpdateResult.feed_version === expectedFeedVersion ? tripUpdateResult.items : [];
+      const currentVehicles = mergeByKey(
+        [
+          ...(selectedVehicleResult.feed_version === expectedFeedVersion ? selectedVehicleResult.items : []),
+          ...otherVehicleResults.flatMap((result) => result.feed_version === expectedFeedVersion ? result.items : [])
+        ],
+        vehicleIdentityKey
+      );
+      const currentAlerts = mergeByKey(
+        [
+          ...(selectedAlertResult.feed_version === expectedFeedVersion ? selectedAlertResult.items : []),
+          ...(otherAlertResult?.feed_version === expectedFeedVersion ? otherAlertResult.items : [])
+        ],
+        alertIdentityKey
+      ).slice(0, 10);
+      const currentTripUpdates = mergeByKey(
+        [
+          ...(selectedTripUpdateResult.feed_version === expectedFeedVersion ? selectedTripUpdateResult.items : []),
+          ...(otherTripUpdateResult?.feed_version === expectedFeedVersion ? otherTripUpdateResult.items : [])
+        ],
+        (item) => item.trip_id
+      );
       const dedupedVehicles = commitVehicleItems(currentVehicles);
       setAlertItems(currentAlerts);
       setTripUpdateItems(currentTripUpdates);
@@ -1627,11 +2012,11 @@ export function MapPage({ session, onLogout }: Props) {
       }
       refreshSelectedStopSchedule();
       if (showBusy) {
-        const realtimeReady = vehicleResult.feed_version === expectedFeedVersion && alertResult.feed_version === expectedFeedVersion;
+        const realtimeReady = selectedVehicleResult.feed_version === expectedFeedVersion && selectedAlertResult.feed_version === expectedFeedVersion;
         setMessage(
           realtimeReady
             ? currentVehicles.length > 0
-              ? 'Realtime refreshed'
+              ? `${activeRouteIds.length} active ${activeRouteIds.length === 1 ? 'route' : 'routes'} refreshed`
               : 'No realtime vehicles for this direction'
             : 'Waiting for realtime data from the active static feed'
         );
@@ -1712,7 +2097,9 @@ export function MapPage({ session, onLogout }: Props) {
     selectedStopHighlightRef.current = stop;
     setSelectedStopHighlight(stop);
     setSelectedVehicleHighlight(null);
-    setSelectedMapItem({ type: 'stop', item: stop, source });
+    const selection: SelectedMapItem = { type: 'stop', item: stop, source };
+    selectedMapItemRef.current = selection;
+    setSelectedMapItem(selection);
     setMessage(`${stop.stop_name} selected`);
   }
 
@@ -1722,10 +2109,18 @@ export function MapPage({ session, onLogout }: Props) {
     const routeIds = stopRouteFilterRef.current?.stop.stop_id === detail.item.stop_id
       ? stopRouteFilterRef.current.routeIds
       : [];
-    void loadStopSchedule(detail.item, routeIds, { preserveItems: true });
+    void loadStopSchedule(detail.item, routeIds, {
+      preserveItems: true,
+      selectedRouteId: stopRouteFilterRef.current?.selectedRouteId,
+      selectedDirectionId: stopRouteFilterRef.current?.selectedDirectionId
+    });
   }
 
-  async function loadStopSchedule(stop: StopItem, routeIds: string[] = [], options: { preserveItems?: boolean } = {}) {
+  async function loadStopSchedule(
+    stop: StopItem,
+    routeIds: string[] = [],
+    options: { preserveItems?: boolean; selectedRouteId?: string; selectedDirectionId?: number | null } = {}
+  ) {
     const requestId = ++stopScheduleRequestId.current;
     setStopSchedule((current) => ({
       stopId: stop.stop_id,
@@ -1736,9 +2131,11 @@ export function MapPage({ session, onLogout }: Props) {
       serviceDate: options.preserveItems && current?.stopId === stop.stop_id ? current.serviceDate : undefined
     }));
     try {
-      const selectedRouteForStop = selectedRouteRef.current;
+      const selectedRouteForStop = options.selectedRouteId
+        ? routeItemsRef.current.find((route) => route.route_id === options.selectedRouteId) ?? selectedRouteRef.current
+        : selectedRouteRef.current;
       const selectedRouteOnly = stopPanelSelectedRouteOnlyRef.current;
-      const selectedDirectionId = selectedDirectionIdRef.current;
+      const selectedDirectionId = options.selectedDirectionId ?? selectedDirectionIdRef.current;
       const selectedRouteApplies = Boolean(
         selectedRouteOnly &&
         selectedRouteForStop &&
@@ -1778,21 +2175,38 @@ export function MapPage({ session, onLogout }: Props) {
     }
   }
 
-  async function selectStopAndFilterRoutes(stop: StopItem, source: StopDetailSource) {
+  async function selectStopAndFilterRoutes(stop: StopItem, source: StopDetailSource, routeId?: string) {
     selectStop(stop, source);
+    const activeStopRouteId = source === 'map' && routeId && activeRouteIdsRef.current.includes(routeId)
+      ? routeId
+      : undefined;
+    const activeStopDirectionId = activeStopRouteId
+      ? activeRouteDirectionsRef.current[activeStopRouteId] ?? null
+      : null;
+    if (activeStopRouteId) {
+      const activeRoute = routeItemsRef.current.find((route) => route.route_id === activeStopRouteId);
+      if (activeRoute && selectedRouteRef.current?.route_id !== activeStopRouteId) {
+        pendingRouteFocusRef.current = { type: 'route', routeId: activeStopRouteId, directionId: activeStopDirectionId };
+        setSelectedRoute(activeRoute);
+        retainLockedRoutesAndSelect(activeRoute);
+        routeMapViewRef.current = { type: 'direction', routeId: activeStopRouteId, directionId: activeStopDirectionId };
+      }
+    }
     setStopSchedule({ stopId: stop.stop_id, loading: true, departures: [], updates: new Map(), vehicles: new Map() });
     try {
       const result = await routesOnStops([stop.stop_id]);
       const routeIds = result.items.map((route) => route.route_id);
-      setStopRouteFilter({ stop, routeIds });
-      void loadStopSchedule(stop, routeIds);
-      if (source !== 'nearby') {
-        setSelectedRoute((current) => (
-          current && routeIds.includes(current.route_id)
-            ? current
-            : routeItems.find((route) => route.route_id === routeIds[0]) ?? result.items[0] ?? current
-        ));
-      }
+      const stopFilter: StopRouteFilter = {
+        stop,
+        routeIds,
+        selectedRouteId: activeStopRouteId,
+        selectedDirectionId: activeStopDirectionId
+      };
+      setStopRouteFilter(stopFilter);
+      void loadStopSchedule(stop, routeIds, {
+        selectedRouteId: activeStopRouteId,
+        selectedDirectionId: activeStopDirectionId
+      });
       setMessage(`${routeIds.length} routes serve ${stop.stop_name}`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Could not filter routes for this stop');
@@ -1836,7 +2250,7 @@ export function MapPage({ session, onLogout }: Props) {
         {visibleRoutes.map((route) => (
           <article
             key={route.route_id}
-            className={`route-card ${selectedRoute?.route_id === route.route_id ? 'active' : ''}`}
+            className={`route-card ${selectedRoute?.route_id === route.route_id ? 'active' : ''} ${activeRouteIds.includes(route.route_id) ? 'monitored' : ''}`}
           >
             <button className="route-select" onClick={() => chooseRoute(route)} title={routeLabel(route)}>
               <span className="mode-icon"><RouteModeIcon type={route.route_type} /></span>
@@ -1845,6 +2259,14 @@ export function MapPage({ session, onLogout }: Props) {
                 <small>{route.route_long_name || 'Unnamed route'}</small>
               </span>
               <ChevronRight size={16} />
+            </button>
+            <button
+              className={`route-monitor-button ${activeRouteIds.includes(route.route_id) ? 'active' : ''}`}
+              disabled={selectedRoute?.route_id === route.route_id}
+              onClick={() => toggleActiveRoute(route)}
+              title={`${activeRouteIds.includes(route.route_id) ? t.removeFromActiveRoutes : t.addToActiveRoutes}: ${routeLabel(route)}`}
+            >
+              <RadioTower size={13} />
             </button>
             <button
               className={`route-favourite-button ${favourites.includes(route.route_id) ? 'active' : ''}`}
@@ -1914,11 +2336,11 @@ export function MapPage({ session, onLogout }: Props) {
             {favouriteRouteItems.map((route) => (
               <span
                 key={route.route_id}
-                className={`favourite-route-chip ${selectedRoute?.route_id === route.route_id ? 'active' : ''}`}
+                className={`favourite-route-chip ${selectedRoute?.route_id === route.route_id ? 'active' : ''} ${activeRouteIds.includes(route.route_id) ? 'monitored' : ''}`}
               >
                 <button
                   className="favourite-route-select"
-                  onClick={() => chooseRoute(route)}
+                  onClick={() => chooseFavouriteRoute(route)}
                   title={routeLabel(route)}
                 >
                   {route.route_short_name || route.route_id}
@@ -1934,6 +2356,7 @@ export function MapPage({ session, onLogout }: Props) {
             ))}
           </div>
         </section>
+
     </aside>
   );
 
@@ -1942,6 +2365,35 @@ export function MapPage({ session, onLogout }: Props) {
       <section className="map-workspace">
         <section className="map-stage">
           <div ref={mapNode} className="map-canvas" />
+          {mapRouteItems.length > 0 && (
+            <div className="map-route-lock-rail" aria-label={t.activeRoutes}>
+              {mapRouteItems.map((route) => {
+                const locked = lockedRouteIds.includes(route.route_id);
+                return (
+                  <span
+                    key={route.route_id}
+                    className={`map-route-lock-item ${locked ? 'locked' : ''} ${selectedRoute?.route_id === route.route_id ? 'selected' : ''}`}
+                  >
+                    <button
+                      className="map-route-select-item"
+                      title={routeLabel(route)}
+                      onClick={() => chooseRoute(route)}
+                    >
+                      {route.route_short_name || route.route_id}
+                    </button>
+                    <button
+                      className="map-route-lock-toggle"
+                      title={`${locked ? t.unlockRoute : t.lockRoute}: ${routeLabel(route)}`}
+                      aria-label={`${locked ? t.unlockRoute : t.lockRoute}: ${routeLabel(route)}`}
+                      onClick={() => toggleRouteLock(route)}
+                    >
+                      {locked ? <Lock size={14} /> : <Unlock size={14} />}
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
           <div className="map-control-stack">
             <button
               className={`map-alert-button ${alertItems.length > 0 ? 'has-alerts' : ''}`}
@@ -2288,6 +2740,7 @@ function adjustedDepartureTiming(departure: DepartureItem, update: TripUpdateIte
       ? minutesAwayFromEpochLabel(realtimeEvent.time)
       : minutesAwayLabel(fallbackSeconds, serviceDate)
   };
+
 }
 
 function realtimeTimingForStop(departure: DepartureItem, update: TripUpdateItem | undefined, serviceDate?: string) {
