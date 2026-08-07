@@ -1707,27 +1707,52 @@ export function MapPage({ session, onLogout }: Props) {
   }
 
   function chooseRoute(route: RouteItem) {
-    setRoutePickerOpen(false);
-    selectedStopHighlightRef.current = null;
     const knownDirectionId = activeRouteDirectionsRef.current[route.route_id];
-    pendingRouteFocusRef.current = {
-      type: 'route',
-      routeId: route.route_id,
-      directionId: knownDirectionId ?? null
-    };
-    setSelectedRoute(route);
-    retainLockedRoutesAndSelect(route);
-    setSelectedMapItem({ type: 'route', item: route });
-    setSelectedStopHighlight(null);
-    setSelectedVehicleHighlight(null);
-    setStopSchedule(null);
-    tripFocusRequestId.current += 1;
-    focusedTripMapDataRef.current = null;
-    routeMapViewRef.current = { type: 'direction', routeId: route.route_id, directionId: knownDirectionId ?? null };
+    focusRouteInRouteMode(route, knownDirectionId, {
+      pendingFocus: { type: 'route', routeId: route.route_id, directionId: knownDirectionId ?? null }
+    });
   }
 
-  function chooseFavouriteRoute(route: RouteItem) {
-    chooseRoute(route);
+  function focusRouteInRouteMode(
+    route: RouteItem,
+    directionId?: number | null,
+    options: { pendingFocus?: PendingRouteFocus; preserveStopSelection?: boolean } = {}
+  ) {
+    const selectedDirectionId = directionId ?? null;
+    const preserveStopSelection = options.preserveStopSelection === true;
+    setRoutePickerOpen(false);
+    if (!preserveStopSelection) selectedStopHighlightRef.current = null;
+    if (options.pendingFocus) pendingRouteFocusRef.current = options.pendingFocus;
+    setSelectedRoute(route);
+    retainLockedRoutesAndSelect(route);
+    if (!preserveStopSelection) {
+      setSelectedMapItem({ type: 'route', item: route });
+      setSelectedStopHighlight(null);
+      setSelectedVehicleHighlight(null);
+      setStopSchedule(null);
+    }
+    tripFocusRequestId.current += 1;
+    focusedTripMapDataRef.current = null;
+    routeMapViewRef.current = { type: 'direction', routeId: route.route_id, directionId: selectedDirectionId };
+  }
+
+  function activateRouteForTrip(
+    route: RouteItem,
+    directionId: number | null | undefined,
+    tripId: string,
+    pendingFocus: PendingRouteFocus
+  ) {
+    const selectedDirectionId = directionId ?? null;
+    pendingRouteFocusRef.current = pendingFocus;
+    retainLockedRoutesAndSelect(route, undefined, { tripFocused: true });
+    setActiveRouteDirections((current) => ({ ...current, [route.route_id]: selectedDirectionId }));
+    routeMapViewRef.current = {
+      type: 'trip',
+      routeId: route.route_id,
+      directionId: selectedDirectionId,
+      tripId
+    };
+    setSelectedRoute(route);
   }
 
   function retainLockedRoutesAndSelect(
@@ -1803,21 +1828,12 @@ export function MapPage({ session, onLogout }: Props) {
     const route = routeItemsRef.current.find((item) => item.route_id === vehicle.route_id) ?? selectedRouteRef.current;
     if (!route) return;
     if (selectedRouteRef.current?.route_id !== route.route_id) {
-      pendingRouteFocusRef.current = {
+      activateRouteForTrip(route, vehicle.direction_id, vehicle.trip_id, {
         type: 'vehicle',
         routeId: route.route_id,
         directionId: vehicle.direction_id,
         vehicle
-      };
-      retainLockedRoutesAndSelect(route, undefined, { tripFocused: true });
-      setActiveRouteDirections((current) => ({ ...current, [route.route_id]: vehicle.direction_id ?? null }));
-      routeMapViewRef.current = {
-        type: 'trip',
-        routeId: route.route_id,
-        directionId: vehicle.direction_id,
-        tripId: vehicle.trip_id
-      };
-      setSelectedRoute(route);
+      });
       return;
     }
     if (vehicle.trip_id) {
@@ -1844,9 +1860,12 @@ export function MapPage({ session, onLogout }: Props) {
       void focusTripPattern(route, departure.trip_id, departure.direction_id);
       return;
     }
-    retainLockedRoutesAndSelect(route, undefined, { tripFocused: true });
-    setActiveRouteDirections((current) => ({ ...current, [route.route_id]: departure.direction_id ?? null }));
-    setSelectedRoute(route);
+    activateRouteForTrip(route, departure.direction_id, departure.trip_id, {
+      type: 'route',
+      routeId: route.route_id,
+      directionId: departure.direction_id,
+      tripId: departure.trip_id
+    });
   }
 
   function selectDepartureVehicle(vehicle: VehicleItem, departure: DepartureItem) {
@@ -1870,18 +1889,12 @@ export function MapPage({ session, onLogout }: Props) {
       selectVehicle(vehicle);
       return;
     }
-    retainLockedRoutesAndSelect(route, undefined, { tripFocused: true });
-    setActiveRouteDirections((current) => ({
-      ...current,
-      [route.route_id]: vehicle.direction_id ?? departure.direction_id ?? null
-    }));
-    routeMapViewRef.current = {
-      type: 'trip',
+    activateRouteForTrip(route, vehicle.direction_id ?? departure.direction_id, vehicle.trip_id, {
+      type: 'vehicle',
       routeId: route.route_id,
       directionId: vehicle.direction_id ?? departure.direction_id,
-      tripId: vehicle.trip_id
-    };
-    setSelectedRoute(route);
+      vehicle
+    });
   }
 
   function changeStopPanelSelectedRouteOnly(value: boolean) {
@@ -2186,10 +2199,10 @@ export function MapPage({ session, onLogout }: Props) {
     if (activeStopRouteId) {
       const activeRoute = routeItemsRef.current.find((route) => route.route_id === activeStopRouteId);
       if (activeRoute && selectedRouteRef.current?.route_id !== activeStopRouteId) {
-        pendingRouteFocusRef.current = { type: 'route', routeId: activeStopRouteId, directionId: activeStopDirectionId };
-        setSelectedRoute(activeRoute);
-        retainLockedRoutesAndSelect(activeRoute);
-        routeMapViewRef.current = { type: 'direction', routeId: activeStopRouteId, directionId: activeStopDirectionId };
+        focusRouteInRouteMode(activeRoute, activeStopDirectionId, {
+          pendingFocus: { type: 'route', routeId: activeStopRouteId, directionId: activeStopDirectionId },
+          preserveStopSelection: true
+        });
       }
     }
     setStopSchedule({ stopId: stop.stop_id, loading: true, departures: [], updates: new Map(), vehicles: new Map() });
@@ -2340,7 +2353,7 @@ export function MapPage({ session, onLogout }: Props) {
               >
                 <button
                   className="favourite-route-select"
-                  onClick={() => chooseFavouriteRoute(route)}
+                  onClick={() => chooseRoute(route)}
                   title={routeLabel(route)}
                 >
                   {route.route_short_name || route.route_id}

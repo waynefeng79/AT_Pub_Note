@@ -831,7 +831,6 @@ img.brand-mark {
 }
 
 .favourite-route-select,
-.favourite-route-monitor,
 .favourite-route-remove {
   min-width: 0;
   border: 0;
@@ -853,17 +852,6 @@ img.brand-mark {
   display: grid;
   place-items: center;
   color: #64748b;
-}
-
-.favourite-route-monitor {
-  width: 20px;
-  display: grid;
-  place-items: center;
-  color: #0f766e;
-}
-
-.favourite-route-monitor:disabled {
-  opacity: 0.55;
 }
 
 .favourite-route-remove:hover {
