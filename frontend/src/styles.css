@@ -564,9 +564,11 @@ img.brand-mark {
   z-index: 20;
   top: 10px;
   left: 10px;
-  display: grid;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 6px;
-  max-width: 110px;
+  max-width: calc(100% - 20px);
   pointer-events: auto;
 }
 
@@ -626,6 +628,11 @@ img.brand-mark {
 .map-route-lock-toggle:hover,
 .map-route-select-item:hover {
   background: rgba(15, 118, 110, 0.12);
+}
+
+.map-route-lock-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .map-route-select-item span {

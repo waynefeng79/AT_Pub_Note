@@ -143,6 +143,7 @@ const AUCKLAND: [number, number] = [174.7633, -36.8485];
 const SELECTED_ROUTE_STORAGE_KEY = 'at-public-note:selected-route-id';
 const STOP_SELECTED_ROUTE_ONLY_STORAGE_KEY = 'at-public-note:stop-selected-route-only';
 const STOP_TIMETABLE_BATCH_SIZE = 8;
+const MAX_LOCKED_ROUTES = 5;
 const MAIN_ROUTE_TYPES = new Set([2, 3, 4]);
 const routeModeOptions: { value: RouteModeFilter; label: string; iconType: number }[] = [
   { value: 'all', label: 'All', iconType: 3 },
@@ -175,6 +176,7 @@ const UI_TEXT = {
     activeRoutes: 'Active routes',
     lockRoute: 'Lock selected route',
     unlockRoute: 'Unlock selected route',
+    maxLockedRoutes: 'Maximum of 5 locked routes',
     addToActiveRoutes: 'Monitor route',
     removeFromActiveRoutes: 'Stop monitoring route',
     removeFromFavourites: 'Remove from favourites',
@@ -249,6 +251,7 @@ const UI_TEXT = {
     activeRoutes: 'Ngā ararere hohe',
     lockRoute: 'Maukati te ararere kua tīpakohia',
     unlockRoute: 'Wewete i te ararere kua tīpakohia',
+    maxLockedRoutes: 'E 5 anake ngā ararere ka taea te maukati',
     addToActiveRoutes: 'Aroturuki ararere',
     removeFromActiveRoutes: 'Kati te aroturuki ararere',
     removeFromFavourites: 'Tangohia i ngā makau',
@@ -1778,6 +1781,10 @@ export function MapPage({ session, onLogout }: Props) {
 
   function toggleRouteLock(route: RouteItem) {
     const isLocked = lockedRouteIdsRef.current.includes(route.route_id);
+    if (!isLocked && lockedRouteIdsRef.current.length >= MAX_LOCKED_ROUTES) {
+      setMessage(UI_TEXT[language].maxLockedRoutes);
+      return;
+    }
     setLockedRouteIds((current) => isLocked
       ? current.filter((routeId) => routeId !== route.route_id)
       : [...current, route.route_id]);
@@ -2382,6 +2389,7 @@ export function MapPage({ session, onLogout }: Props) {
             <div className="map-route-lock-rail" aria-label={t.activeRoutes}>
               {mapRouteItems.map((route) => {
                 const locked = lockedRouteIds.includes(route.route_id);
+                const lockLimitReached = !locked && lockedRouteIds.length >= MAX_LOCKED_ROUTES;
                 return (
                   <span
                     key={route.route_id}
@@ -2396,7 +2404,10 @@ export function MapPage({ session, onLogout }: Props) {
                     </button>
                     <button
                       className="map-route-lock-toggle"
-                      title={`${locked ? t.unlockRoute : t.lockRoute}: ${routeLabel(route)}`}
+                      disabled={lockLimitReached}
+                      title={lockLimitReached
+                        ? `${t.maxLockedRoutes}: ${routeLabel(route)}`
+                        : `${locked ? t.unlockRoute : t.lockRoute}: ${routeLabel(route)}`}
                       aria-label={`${locked ? t.unlockRoute : t.lockRoute}: ${routeLabel(route)}`}
                       onClick={() => toggleRouteLock(route)}
                     >
