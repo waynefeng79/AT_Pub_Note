@@ -66,6 +66,11 @@ The backend container runs `WEB_CONCURRENCY` Uvicorn workers, defaulting to `2`.
 For a 2 vCPU EC2 instance, start with `WEB_CONCURRENCY=2`; reduce to `1` if
 memory is tight or increase only after checking database pool pressure.
 
+Journey planning and public/private Nominatim configuration, policy obligations,
+benchmarking, tuning, rollout, and rollback are documented in
+[`docs/journey-planner.md`](docs/journey-planner.md). Planner-enabled deployments
+should start with one API worker because each worker owns an immutable timetable index.
+
 The full stack starts the one-shot `migrate` service first. API and worker
 containers wait for it to complete, so runtime code does not create or alter
 tables during request handling or polling loops.

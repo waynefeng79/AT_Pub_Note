@@ -168,3 +168,13 @@ def test_route_ids_for_trip_ids_uses_active_feed_scope():
     assert "feed_version = %s" in conn.sql
     assert "trip_id = ANY(%s)" in conn.sql
     assert conn.params == ("feed-1", ["trip-1", "trip-2"])
+def test_planner_trip_times_are_ordered_and_feed_scoped():
+    conn = FakeConnection()
+
+    rows = GtfsRepository(conn).planner_trip_times("feed-9")
+
+    assert rows == []
+    assert "JOIN stop_times st" in conn.sql
+    assert "st.arrival_seconds IS NOT NULL" in conn.sql
+    assert "ORDER BY t.route_id" in conn.sql
+    assert conn.params == ("feed-9",)

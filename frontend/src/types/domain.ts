@@ -134,3 +134,70 @@ export type CacheMeta = {
   status: 'hit' | 'miss' | string;
   cell?: string;
 };
+
+export type PlaceCandidate = {
+  id: string;
+  name: string;
+  display_name: string;
+  secondary_text: string;
+  latitude: number;
+  longitude: number;
+  category: string;
+  type: string;
+  bounding_box?: number[] | null;
+  attribution: string;
+};
+
+export type JourneyEndpoint = {
+  place_id?: string | null;
+  name: string;
+  latitude: number;
+  longitude: number;
+  confirmed: boolean;
+};
+
+export type JourneyPoint = {
+  name: string;
+  latitude: number;
+  longitude: number;
+  stop_id?: string | null;
+  platform_code?: string | null;
+};
+
+export type TransitJourneyLeg = {
+  type: 'transit';
+  route_id: string;
+  route_short_name: string;
+  route_long_name: string;
+  route_type: number;
+  route_color?: string | null;
+  route_text_color?: string | null;
+  trip_id: string;
+  direction_id?: number | null;
+  shape_id?: string | null;
+  headsign?: string | null;
+  service_date: string;
+  from: JourneyPoint;
+  to: JourneyPoint;
+  scheduled_departure: string;
+  scheduled_arrival: string;
+  realtime?: TripUpdateItem | null;
+  alerts?: AlertItem[];
+};
+
+export type JourneyOption = {
+  id: string;
+  departure_time: string;
+  duration_seconds: number;
+  transfers: number;
+  legs: TransitJourneyLeg[];
+};
+
+export type JourneyPlanResponse = {
+  feed_version: string;
+  service_date: string;
+  status: 'ok' | 'no_journey';
+  realtime_status: 'current' | 'unavailable' | 'mismatched';
+  realtime_generated_at?: string | null;
+  options: JourneyOption[];
+};

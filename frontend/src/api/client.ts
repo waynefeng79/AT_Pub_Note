@@ -14,8 +14,9 @@ import type {
   User,
   VehicleItem
 } from '../types/domain';
+import type { JourneyEndpoint, JourneyPlanResponse, PlaceCandidate } from '../types/domain';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
+const API_BASE = (import.meta.env?.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 let onUnauthorized: (() => void) | null = null;
 
 type RequestOptions = RequestInit;
@@ -235,14 +236,16 @@ export function nextDepartures(
   routeIds: string[],
   signal?: AbortSignal,
   maxResults = 8,
-  directionIds: number[] = []
+  directionIds: number[] = [],
+  feedVersion?: string
 ) {
   return request<{ feed_version: string; service_date?: string; items: DepartureItem[] }>('/api/timetable/v1/next-departures', {
     method: 'POST',
     signal,
     body: JSON.stringify({
       stop_filter: { stop_ids: stopIds, route_ids: routeIds, direction_ids: directionIds },
-      time_window: { max_results: maxResults }
+      time_window: { max_results: maxResults },
+      ...(feedVersion ? { feed_version: feedVersion } : {})
     })
   });
 }
@@ -269,5 +272,40 @@ export function addFavourite(routeId: string) {
 export function removeFavourite(routeId: string) {
   return request<{ route_ids: string[] }>(`/api/app/v1/favourite-routes/${encodeURIComponent(routeId)}`, {
     method: 'DELETE'
+  });
+}
+
+export function searchPlaces(query: string, limit = 8, signal?: AbortSignal) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return request<{ query: string; candidates: PlaceCandidate[]; attribution: string; cache: string }>(
+    `/api/geocoding/v1/search?${params}`,
+    { signal }
+  );
+}
+
+export function reversePlace(lat: number, lon: number, signal?: AbortSignal) {
+  const params = new URLSearchParams({ lat: String(lat), lon: String(lon) });
+  return request<{ latitude: number; longitude: number; candidate: PlaceCandidate | null; attribution: string; cache: string }>(
+    `/api/geocoding/v1/reverse?${params}`,
+    { signal }
+  );
+}
+
+export function planJourney(
+  origin: JourneyEndpoint,
+  destination: JourneyEndpoint,
+  departureTime: string,
+  optionLimit = 5,
+  signal?: AbortSignal
+) {
+  return request<JourneyPlanResponse>('/api/journeys/v1/plan', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify({
+      origin,
+      destination,
+      departure_time: departureTime,
+      option_limit: optionLimit
+    })
   });
 }

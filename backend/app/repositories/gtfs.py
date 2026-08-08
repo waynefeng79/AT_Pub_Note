@@ -267,6 +267,55 @@ class GtfsRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def planner_stops(self, feed_version: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT stop_id, stop_name, stop_lat, stop_lon, parent_station, platform_code
+            FROM stops
+            WHERE feed_version = %s AND location_type = 0
+            ORDER BY stop_id
+            """,
+            (feed_version,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def planner_trip_times(self, feed_version: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT t.trip_id, t.route_id, t.service_id, t.direction_id, t.trip_headsign, t.shape_id,
+                   r.route_short_name, r.route_long_name, r.route_type, r.route_color, r.route_text_color,
+                   st.stop_id, st.stop_sequence, st.arrival_seconds, st.departure_seconds,
+                   st.pickup_type, st.drop_off_type
+            FROM trips t
+            JOIN routes r ON r.feed_version = t.feed_version AND r.route_id = t.route_id
+            JOIN stop_times st ON st.feed_version = t.feed_version AND st.trip_id = t.trip_id
+            WHERE t.feed_version = %s
+              AND st.arrival_seconds IS NOT NULL
+              AND st.departure_seconds IS NOT NULL
+            ORDER BY t.route_id, t.direction_id NULLS FIRST, t.trip_id, st.stop_sequence
+            """,
+            (feed_version,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def planner_calendars(self, feed_version: str) -> dict:
+        calendars = self.conn.execute(
+            """
+            SELECT service_id, monday, tuesday, wednesday, thursday, friday, saturday, sunday,
+                   start_date, end_date
+            FROM calendar WHERE feed_version = %s ORDER BY service_id
+            """,
+            (feed_version,),
+        ).fetchall()
+        exceptions = self.conn.execute(
+            """
+            SELECT service_id, date, exception_type
+            FROM calendar_dates WHERE feed_version = %s ORDER BY date, service_id
+            """,
+            (feed_version,),
+        ).fetchall()
+        return {"calendar": [dict(row) for row in calendars], "calendar_dates": [dict(row) for row in exceptions]}
+
     def nearby_routes(self, feed_version: str, lat: float, lon: float, radius_m: int, limit: int, route_types: list[int]) -> list[dict]:
         route_type_sql = psql.SQL("AND r.route_type = ANY(%s)") if route_types else psql.SQL("")
         params: list = [lon, lat, feed_version, lon, lat, radius_m]

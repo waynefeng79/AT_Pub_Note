@@ -1,3 +1,6 @@
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -65,6 +68,7 @@ class DeparturesRequest(BaseModel):
     stop_filter: StopFilter
     service_date: ServiceDateFilter = Field(default_factory=ServiceDateFilter)
     time_window: TimeWindow = Field(default_factory=TimeWindow)
+    feed_version: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class RealtimeRequest(BaseModel):
@@ -77,3 +81,101 @@ class BatchStopsRequest(BaseModel):
 
 class FavouriteRoutesRequest(BaseModel):
     route_ids: list[str]
+
+
+class PlaceCandidate(BaseModel):
+    id: str
+    name: str
+    display_name: str
+    secondary_text: str
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    category: str
+    type: str
+    bounding_box: list[float] | None = None
+    attribution: str
+
+
+class GeocodingSearchResponse(BaseModel):
+    query: str
+    candidates: list[PlaceCandidate]
+    attribution: str
+    cache: str
+
+
+class GeocodingReverseResponse(BaseModel):
+    latitude: float
+    longitude: float
+    candidate: PlaceCandidate | None
+    attribution: str
+    cache: str
+
+
+class GeocodingErrorPayload(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+    retry_after_seconds: int | None = None
+
+
+class JourneyEndpoint(BaseModel):
+    place_id: str | None = None
+    name: str = Field(min_length=1, max_length=300)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    confirmed: bool = True
+
+
+class JourneyPlanRequest(BaseModel):
+    origin: JourneyEndpoint
+    destination: JourneyEndpoint
+    departure_time: datetime
+    option_limit: int = Field(default=5, ge=1, le=20)
+
+
+class JourneyPoint(BaseModel):
+    name: str
+    latitude: float
+    longitude: float
+    stop_id: str | None = None
+    platform_code: str | None = None
+
+
+class TransitJourneyLeg(BaseModel):
+    type: Literal["transit"]
+    route_id: str
+    route_short_name: str
+    route_long_name: str
+    route_type: int
+    route_color: str | None = None
+    route_text_color: str | None = None
+    trip_id: str
+    direction_id: int | None = None
+    shape_id: str | None = None
+    headsign: str | None = None
+    service_date: str
+    from_: JourneyPoint = Field(alias="from")
+    to: JourneyPoint
+    scheduled_departure: datetime
+    scheduled_arrival: datetime
+    realtime: dict | None = None
+    alerts: list[dict] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class JourneyOption(BaseModel):
+    id: str
+    departure_time: datetime
+    duration_seconds: int = Field(ge=0)
+    transfers: int = Field(ge=0, le=2)
+    legs: list[TransitJourneyLeg]
+
+
+class JourneyPlanResponse(BaseModel):
+    feed_version: str
+    service_date: str
+    status: Literal["ok", "no_journey"]
+    realtime_status: Literal["current", "unavailable", "mismatched"]
+    realtime_generated_at: str | None = None
+    options: list[JourneyOption]

@@ -20,6 +20,11 @@ def _service(conn: DbConnection) -> StaticGtfsService:
     return StaticGtfsService(GtfsRepository(conn))
 
 
+def _require_feed(repo: GtfsRepository, feed_version: str) -> None:
+    if not repo.feed_metadata(feed_version):
+        raise HTTPException(status_code=404, detail="Unknown feed version")
+
+
 @router.get("/feed")
 def active_feed(conn: Annotated[DbConnection, Depends(get_conn)], response: Response) -> dict:
     try:
@@ -78,7 +83,9 @@ def route_shapes(feed_version: str, route_id: str, conn: Annotated[DbConnection,
 
 @router.get("/feeds/{feed_version}/trips/{trip_id}/shape")
 def trip_shape(feed_version: str, trip_id: str, conn: Annotated[DbConnection, Depends(get_conn)], response: Response) -> dict:
-    shape = GtfsRepository(conn).trip_shape(feed_version, trip_id)
+    repo = GtfsRepository(conn)
+    _require_feed(repo, feed_version)
+    shape = repo.trip_shape(feed_version, trip_id)
     if not shape:
         raise HTTPException(status_code=404, detail="Trip shape not found")
     payload = {"feed_version": feed_version, **shape}
@@ -95,7 +102,9 @@ def route_stops(feed_version: str, route_id: str, conn: Annotated[DbConnection, 
 
 @router.get("/feeds/{feed_version}/trips/{trip_id}/stops")
 def trip_stops(feed_version: str, trip_id: str, conn: Annotated[DbConnection, Depends(get_conn)], response: Response) -> dict:
-    item = GtfsRepository(conn).trip_stops(feed_version, trip_id)
+    repo = GtfsRepository(conn)
+    _require_feed(repo, feed_version)
+    item = repo.trip_stops(feed_version, trip_id)
     if not item:
         raise HTTPException(status_code=404, detail="Trip not found")
     payload = {"feed_version": feed_version, **item}
