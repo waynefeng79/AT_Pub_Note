@@ -3,16 +3,14 @@ import { Loader2 } from 'lucide-react';
 import { logout, me, setUnauthorizedHandler } from './api/client';
 import type { Session } from './auth/session';
 import { LoginPage } from './pages/LoginPage';
+import { routeFromHash, type RouteName } from './routing';
 
 const MapPage = lazy(() => import('./pages/MapPage').then((module) => ({ default: module.MapPage })));
 
-type RouteName = 'login' | 'map';
+const JOURNEY_ENABLED = import.meta.env.VITE_JOURNEY_PLANNER_ENABLED === 'true';
 
 function routeFromLocation(session: Session | null): RouteName {
-  const hash = window.location.hash.replace('#', '');
-  if (hash === '/login') return 'login';
-  if (hash === '/map') return session ? 'map' : 'login';
-  return session ? 'map' : 'login';
+  return routeFromHash(window.location.hash, Boolean(session), JOURNEY_ENABLED);
 }
 
 export function App() {
@@ -43,8 +41,9 @@ export function App() {
         const user = await me();
         const verified = { email: user.email };
         setSession(verified);
-        setRoute('map');
-        window.location.hash = '/map';
+        const nextRoute = routeFromLocation(verified);
+        setRoute(nextRoute);
+        window.location.hash = `/${nextRoute}`;
       } catch {
         endSession();
       } finally {
@@ -74,13 +73,17 @@ export function App() {
         />
       );
     }
+    const goTo = (next: 'map' | 'journey') => {
+      setRoute(next);
+      window.location.hash = `/${next}`;
+    };
     return (
       <Suspense fallback={<main className="boot-screen"><Loader2 className="spin" size={28} /></main>}>
         <MapPage
           session={session}
-          onLogout={() => {
-            void logout().finally(endSession);
-          }}
+          controlMode={route === 'journey' && JOURNEY_ENABLED ? 'journey' : 'map'}
+          onControlModeChange={JOURNEY_ENABLED ? goTo : undefined}
+          onLogout={() => void logout().finally(endSession)}
         />
       </Suspense>
     );

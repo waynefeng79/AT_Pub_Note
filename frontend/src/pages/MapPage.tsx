@@ -9,6 +9,7 @@ import {
   Lock,
   LogOut,
   RadioTower,
+  Route,
   Search,
   Star,
   UserRound,
@@ -23,7 +24,6 @@ import {
   alerts,
   favouriteRoutes,
   nearbyStops,
-  nextDepartures,
   removeFavourite,
   routeShapes,
   routeStops,
@@ -33,14 +33,15 @@ import {
   tripShape,
   tripStops,
   tripUpdates,
-  vehicles,
-  vehiclesForTrips
+  vehicles
 } from '../api/client';
 import type { Session } from '../auth/session';
 import type {
   AlertItem,
   DepartureItem,
   FeedResponse,
+  JourneyOption,
+  TransitJourneyLeg,
   RouteDirection,
   RouteItem,
   RouteShape,
@@ -50,10 +51,41 @@ import type {
   VehicleItem
 } from '../types/domain';
 import { RouteModeIcon } from '../components/RouteModeIcon';
+import {
+  dedupeVehicleItems,
+  findMatchingVehicle,
+  formatOccupancyStatus,
+  plannedRouteState,
+  presentationCoordinates,
+  retainedRouteIds,
+  transitLegs,
+  toggleLockedRouteIds,
+  vehicleIdentityKey,
+  vehicleLabel,
+  type JourneyMapPresentation,
+  type JourneyRealtime
+} from '../components/transitMapModel';
+import { isExpiredFeedError, loadJourneyPresentation, loadJourneyRealtime, loadStopTransitDetail } from '../components/transitData';
+import { createTransitMap, observeTransitMapReady } from '../components/transitMapRuntime';
+import { ViewTabs } from '../components/ViewTabs';
+import { ensureVehicleImage, routeColour as colour, vehicleFeatures } from '../components/transitMapSymbols';
+import {
+  JourneyPlannerControls,
+  type JourneyPlanSelection
+} from '../components/JourneyPlannerControls';
 
 type Props = {
   session: Session;
   onLogout: () => void;
+  controlMode: 'map' | 'journey';
+  onControlModeChange?: (mode: 'map' | 'journey') => void;
+};
+
+type ActiveJourney = {
+  selection: JourneyPlanSelection;
+  presentation: JourneyMapPresentation;
+  realtime: JourneyRealtime;
+  partialErrors: string[];
 };
 
 type SelectedMapItem =
@@ -61,7 +93,8 @@ type SelectedMapItem =
   | { type: 'stop'; item: StopItem; source: 'route' | 'nearby' | 'map' }
   | { type: 'vehicle'; item: VehicleItem }
   | { type: 'alerts'; items: AlertItem[] }
-  | { type: 'nearby'; items: StopItem[] };
+  | { type: 'nearby'; items: StopItem[] }
+  | { type: 'journey' };
 
 type StopDetailSource = Extract<SelectedMapItem, { type: 'stop' }>['source'];
 type RouteModeFilter = 'all' | 'other' | number;
@@ -304,32 +337,6 @@ const UI_TEXT = {
     minuteSuffix: 'min'
   }
 } as const;
-const MAP_STYLE_URL = import.meta.env.VITE_MAP_STYLE_URL?.trim();
-const DEFAULT_MAP_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    'openstreetmap-tiles': {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      maxzoom: 19,
-      attribution: 'Map Data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
-    }
-  },
-  layers: [
-    {
-      id: 'openstreetmap-basemap',
-      type: 'raster',
-      source: 'openstreetmap-tiles'
-    }
-  ]
-};
-
-function colour(route: RouteItem) {
-  const value = route.route_color?.replace('#', '') || '0f766e';
-  return `#${value}`;
-}
-
 const BRANCH_COLOURS = ['#2563eb', '#dc2626', '#7c3aed', '#ca8a04', '#0891b2', '#be185d'];
 
 function branchColour(route: RouteItem, index: number) {
@@ -512,135 +519,6 @@ function matchesRouteMode(route: RouteItem, filter: RouteModeFilter) {
   return route.route_type === filter;
 }
 
-function vehicleModeKey(routeType: number | null | undefined) {
-  if (routeType === 2) return 'train';
-  if (routeType === 4) return 'ferry';
-  return 'bus';
-}
-
-function isExtraServiceVehicle(vehicle: VehicleItem) {
-  return ['ADDED', 'REPLACEMENT', 'DUPLICATED'].includes(vehicle.schedule_relationship ?? '');
-}
-
-function vehicleImageId(route: RouteItem | null, extraService = false) {
-  const routeColour = route ? colour(route).replace(/[^a-zA-Z0-9]/g, '') : '0f766e';
-  return `vehicle-${vehicleModeKey(route?.route_type)}-${routeColour}${extraService ? '-extra' : ''}`;
-}
-
-function ensureVehicleImage(mapInstance: maplibregl.Map, route: RouteItem | null, extraService = false) {
-  const imageId = vehicleImageId(route, extraService);
-  if (mapInstance.hasImage(imageId)) return imageId;
-
-  const size = 44;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const context = canvas.getContext('2d');
-  if (!context) return imageId;
-
-  const routeColour = route ? colour(route) : '#0f766e';
-  context.clearRect(0, 0, size, size);
-  context.fillStyle = routeColour;
-  context.strokeStyle = '#ffffff';
-  context.lineWidth = 4;
-  context.beginPath();
-  context.arc(size / 2, size / 2, 18, 0, Math.PI * 2);
-  context.fill();
-  context.stroke();
-
-  if (extraService) {
-    context.strokeStyle = '#f59e0b';
-    context.lineWidth = 3;
-    context.beginPath();
-    context.arc(size / 2, size / 2, 20, 0, Math.PI * 2);
-    context.stroke();
-  }
-
-  context.fillStyle = '#ffffff';
-  context.strokeStyle = '#ffffff';
-  context.lineWidth = 2.2;
-  context.lineCap = 'round';
-  context.lineJoin = 'round';
-
-  const mode = vehicleModeKey(route?.route_type);
-  if (mode === 'train') {
-    context.fillRect(14, 11, 16, 18);
-    context.fillStyle = routeColour;
-    context.fillRect(17, 14, 4, 5);
-    context.fillRect(23, 14, 4, 5);
-    context.fillStyle = '#ffffff';
-    context.beginPath();
-    context.moveTo(16, 33);
-    context.lineTo(20, 29);
-    context.moveTo(28, 33);
-    context.lineTo(24, 29);
-    context.stroke();
-  } else if (mode === 'ferry') {
-    context.beginPath();
-    context.moveTo(13, 25);
-    context.lineTo(31, 25);
-    context.lineTo(27, 31);
-    context.lineTo(17, 31);
-    context.closePath();
-    context.fill();
-    context.fillRect(17, 15, 10, 7);
-    context.fillStyle = routeColour;
-    context.fillRect(19, 17, 3, 3);
-    context.fillRect(24, 17, 3, 3);
-    context.fillStyle = '#ffffff';
-  } else {
-    context.fillRect(12, 13, 20, 16);
-    context.fillStyle = routeColour;
-    context.fillRect(15, 16, 5, 5);
-    context.fillRect(24, 16, 5, 5);
-    context.fillStyle = '#ffffff';
-    context.beginPath();
-    context.arc(17, 31, 2.2, 0, Math.PI * 2);
-    context.arc(27, 31, 2.2, 0, Math.PI * 2);
-    context.fill();
-  }
-
-  if (extraService) {
-    context.fillStyle = '#f59e0b';
-    context.strokeStyle = '#ffffff';
-    context.lineWidth = 2;
-    context.beginPath();
-    context.arc(32, 12, 7, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
-    context.strokeStyle = '#ffffff';
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(32, 8.5);
-    context.lineTo(32, 15.5);
-    context.moveTo(28.5, 12);
-    context.lineTo(35.5, 12);
-    context.stroke();
-  }
-
-  mapInstance.addImage(imageId, context.getImageData(0, 0, size, size), { pixelRatio: 2 });
-  return imageId;
-}
-
-function vehicleFeatures(items: VehicleItem[], routeLookup: Map<string, RouteItem>, fallbackRoute: RouteItem | null = null): Feature<Point>[] {
-  return items
-    .filter((item) => item.position.latitude != null && item.position.longitude != null)
-    .map((item) => {
-      const route = routeLookup.get(item.route_id) ?? fallbackRoute;
-      return {
-        type: 'Feature',
-        properties: {
-          vehicle_key: vehicleIdentityKey(item),
-          id: item.vehicle_id,
-          trip_id: item.trip_id,
-          bearing: item.position.bearing ?? 0,
-          mode_image: vehicleImageId(route, isExtraServiceVehicle(item))
-        },
-        geometry: { type: 'Point', coordinates: [item.position.longitude!, item.position.latitude!] }
-      };
-    });
-}
-
 function activeTripIds(vehicles: VehicleItem[], updates: TripUpdateItem[]) {
   const ids = new Set<string>();
   for (const vehicle of vehicles) {
@@ -770,7 +648,7 @@ function rememberStopSelectedRouteOnly(value: boolean) {
   }
 }
 
-export function MapPage({ session, onLogout }: Props) {
+export function MapPage({ session, onLogout, controlMode, onControlModeChange }: Props) {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const feedRefreshInFlight = useRef(false);
@@ -796,6 +674,8 @@ export function MapPage({ session, onLogout }: Props) {
   const tripFocusRequestId = useRef(0);
   const focusedTripMapDataRef = useRef<FocusedTripMapData | null>(null);
   const routeMapViewRef = useRef<RouteMapView | null>(null);
+  const activeJourneyRef = useRef<ActiveJourney | null>(null);
+  const journeySelectionRequest = useRef(0);
   const startupLocateStarted = useRef(false);
   const mapBackgroundClickBound = useRef(false);
   const userMarker = useRef<maplibregl.Marker | null>(null);
@@ -830,6 +710,8 @@ export function MapPage({ session, onLogout }: Props) {
   const [busy, setBusy] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const [sseReconnectToken, setSseReconnectToken] = useState(0);
+  const [activeJourney, setActiveJourney] = useState<ActiveJourney | null>(null);
+  const [journeyOptions, setJourneyOptions] = useState<JourneyPlanSelection[]>([]);
 
   feedRef.current = feed;
   selectedRouteRef.current = selectedRoute;
@@ -843,6 +725,7 @@ export function MapPage({ session, onLogout }: Props) {
   stopRouteFilterRef.current = stopRouteFilter;
   routeItemsRef.current = routeItems;
   stopsRef.current = stops;
+  activeJourneyRef.current = activeJourney;
 
   const visibleRoutes = useMemo(() => {
     const stopFilteredRoutes = stopRouteFilter
@@ -882,24 +765,8 @@ export function MapPage({ session, onLogout }: Props) {
 
   useEffect(() => {
     if (!mapNode.current || map.current) return;
-    const instance = new maplibregl.Map({
-      container: mapNode.current,
-      style: MAP_STYLE_URL || DEFAULT_MAP_STYLE,
-      center: AUCKLAND,
-      zoom: 10.7,
-      attributionControl: false
-    });
-    instance.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
-    instance.addControl(new maplibregl.AttributionControl({
-      compact: true,
-      customAttribution: 'Public Transport Data &copy; <a href="https://at.govt.nz/about-us/at-data-sources/general-transit-feed-specification">Auckland Transport</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)'
-    }), 'bottom-right');
-    const markMapReady = () => {
-      if (instance.isStyleLoaded()) setMapReady(true);
-    };
-    instance.on('load', markMapReady);
-    instance.on('styledata', markMapReady);
-    instance.on('idle', markMapReady);
+    const instance = createTransitMap(mapNode.current);
+    const stopObservingReady = observeTransitMapReady(instance, () => setMapReady(true));
     map.current = instance;
     if (!startupLocateStarted.current) {
       startupLocateStarted.current = true;
@@ -909,9 +776,7 @@ export function MapPage({ session, onLogout }: Props) {
       if (locationWatchId.current != null) navigator.geolocation.clearWatch(locationWatchId.current);
       userMarker.current?.remove();
       userMarker.current = null;
-      instance.off('load', markMapReady);
-      instance.off('styledata', markMapReady);
-      instance.off('idle', markMapReady);
+      stopObservingReady();
       instance.remove();
       map.current = null;
       setMapReady(false);
@@ -919,12 +784,12 @@ export function MapPage({ session, onLogout }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!mapReady || !selectedRoute || routeShapesData.length === 0) return;
+    if (!mapReady || activeJourney || !selectedRoute || routeShapesData.length === 0) return;
     if (map.current?.getSource('route-shapes')) return;
     const direction = routeDirections[selectedDirectionIndex] ?? null;
     const shapePlan = routeShapeRenderPlan(selectedRoute, [], shapesForDirection(routeShapesData, direction));
     renderMap(selectedRoute, shapePlan.shapes, stops, selectedStopHighlight);
-  }, [mapReady, selectedRoute?.route_id, routeShapesData, routeDirections, selectedDirectionIndex, stops]);
+  }, [mapReady, activeJourney?.presentation.id, selectedRoute?.route_id, routeShapesData, routeDirections, selectedDirectionIndex, stops]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -975,12 +840,12 @@ export function MapPage({ session, onLogout }: Props) {
   }, [session.email]);
 
   useEffect(() => {
-    if (!feed || !selectedRoute) return;
+    if (!feed || activeJourney || !selectedRoute) return;
     const controller = new AbortController();
     const requestId = ++routeRequestId.current;
     void loadRoute(selectedRoute, feed.feed_version, requestId, controller.signal);
     return () => controller.abort();
-  }, [feed?.feed_version, selectedRoute?.route_id]);
+  }, [feed?.feed_version, activeJourney?.presentation.id, selectedRoute?.route_id]);
 
   useEffect(() => {
     if (!routeSelectionLoaded.current) return;
@@ -1016,7 +881,7 @@ export function MapPage({ session, onLogout }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!feed || !selectedRoute) return;
+    if (!feed || activeJourneyRef.current || !selectedRoute) return;
     const controller = new AbortController();
     let reconnectTimer: number | undefined;
     const routeIds = activeRouteIds.length > 0 ? activeRouteIds : [selectedRoute.route_id];
@@ -1040,7 +905,7 @@ export function MapPage({ session, onLogout }: Props) {
       controller.abort();
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
     };
-  }, [feed?.feed_version, selectedRoute?.route_id, activeRouteIds.join(','), sseReconnectToken]);
+  }, [feed?.feed_version, activeJourney?.presentation.id, selectedRoute?.route_id, activeRouteIds.join(','), sseReconnectToken]);
 
   useEffect(() => {
     if (!feed) return;
@@ -1049,12 +914,12 @@ export function MapPage({ session, onLogout }: Props) {
   }, [feed?.feed_version]);
 
   useEffect(() => {
-    if (!feed || !selectedRoute || activeRouteIds.length === 0) return;
+    if (!feed || activeJourney || !selectedRoute || activeRouteIds.length === 0) return;
     void refreshRealtime(false, selectedRoute.route_id, feed.feed_version);
-  }, [feed?.feed_version, selectedRoute?.route_id, activeRouteIds.join(',')]);
+  }, [feed?.feed_version, activeJourney?.presentation.id, selectedRoute?.route_id, activeRouteIds.join(',')]);
 
   useEffect(() => {
-    if (!feed || !selectedRoute || activeRouteIds.length === 0) return;
+    if (!feed || activeJourney || !selectedRoute || activeRouteIds.length === 0) return;
     const missingRoutes = activeRouteIds
       .filter((routeId) => routeId !== selectedRoute.route_id && !monitoredRouteDataRef.current.has(routeId))
       .map((routeId) => routeItems.find((route) => route.route_id === routeId))
@@ -1067,7 +932,43 @@ export function MapPage({ session, onLogout }: Props) {
       route,
       activeRouteDirectionsRef.current[route.route_id] ?? null
     )));
-  }, [feed?.feed_version, selectedRoute?.route_id, activeRouteIds.join(','), routeItems]);
+  }, [feed?.feed_version, activeJourney?.presentation.id, selectedRoute?.route_id, activeRouteIds.join(','), routeItems]);
+
+  useEffect(() => {
+    if (!activeJourney) return;
+    let disposed = false;
+    let controller = new AbortController();
+    const refresh = async () => {
+      const snapshot = activeJourneyRef.current;
+      if (!snapshot) return;
+      const requestController = controller;
+      try {
+        const result = await loadJourneyRealtime(snapshot.selection.option, snapshot.selection.feedVersion, requestController.signal);
+        if (disposed || activeJourneyRef.current?.presentation.id !== snapshot.presentation.id) return;
+        const next = { ...snapshot, realtime: result };
+        activeJourneyRef.current = next;
+        setActiveJourney(next);
+        commitVehicleItems(result.vehicles);
+        setAlertItems(result.alerts);
+        setTripUpdateItems(result.tripUpdates);
+        window.setTimeout(() => renderMonitoredMap({ fitBounds: false }), 0);
+      } catch (error) {
+        if (requestController.signal.aborted || disposed) return;
+        setMessage(error instanceof Error ? error.message : 'Journey realtime is temporarily unavailable');
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => {
+      controller.abort();
+      controller = new AbortController();
+      void refresh();
+    }, 20_000);
+    return () => {
+      disposed = true;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [activeJourney?.presentation.id]);
 
   function commitVehicleItems(items: VehicleItem[]) {
     const dedupedItems = dedupeVehicleItems(items);
@@ -1080,12 +981,191 @@ export function MapPage({ session, onLogout }: Props) {
     return dedupedItems;
   }
 
+  function clearJourneyOverlay() {
+    const instance = map.current;
+    if (!instance) return;
+    const emptyPoints: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] };
+    runWhenStyleReady(instance, () => {
+      upsertSource(instance, 'planned-journey-endpoints', emptyPoints);
+    });
+  }
+
+  function clearActiveJourney() {
+    journeySelectionRequest.current += 1;
+    activeJourneyRef.current = null;
+    setActiveJourney(null);
+    setJourneyOptions([]);
+    clearJourneyOverlay();
+  }
+
+  function renderJourneyOverlay(presentation: JourneyMapPresentation, fitBounds: boolean) {
+    const instance = map.current;
+    if (!instance) return;
+    const endpointFeatures: Feature<Point>[] = [
+      {
+        type: 'Feature',
+        properties: { role: 'origin', name: presentation.origin.name },
+        geometry: { type: 'Point', coordinates: [presentation.origin.longitude, presentation.origin.latitude] }
+      },
+      {
+        type: 'Feature',
+        properties: { role: 'destination', name: presentation.destination.name },
+        geometry: { type: 'Point', coordinates: [presentation.destination.longitude, presentation.destination.latitude] }
+      }
+    ];
+
+    runWhenStyleReady(instance, () => {
+      upsertSource(instance, 'planned-journey-endpoints', { type: 'FeatureCollection', features: endpointFeatures });
+      if (!instance.getLayer('planned-journey-endpoints')) {
+        instance.addLayer({
+          id: 'planned-journey-endpoints',
+          type: 'circle',
+          source: 'planned-journey-endpoints',
+          paint: {
+            'circle-radius': 9,
+            'circle-color': ['match', ['get', 'role'], 'origin', '#087f5b', '#b42318'],
+            'circle-stroke-color': '#ffffff',
+            'circle-stroke-width': 3
+          }
+        });
+      }
+      if (!fitBounds) return;
+      const coordinates = presentationCoordinates(presentation);
+      if (!coordinates.length) return;
+      const bounds = coordinates.slice(1).reduce(
+        (box, coordinate) => box.extend(coordinate),
+        new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
+      );
+      const compact = instance.getContainer().clientWidth <= 720;
+      instance.fitBounds(bounds, {
+        padding: compact ? { top: 36, bottom: 36, left: 36, right: 36 } : { top: 80, bottom: 80, left: 80, right: 80 },
+        maxZoom: 14
+      });
+    });
+  }
+
+  async function applyJourneySelection(selection: JourneyPlanSelection) {
+    const requestId = ++journeySelectionRequest.current;
+    setBusy(true);
+    setMessage('Loading planned journey');
+    try {
+      const result = await loadJourneyPresentation(
+        selection.feedVersion,
+        selection.option,
+        selection.origin,
+        selection.destination
+      );
+      if (requestId !== journeySelectionRequest.current) return;
+
+      const legs = transitLegs(selection.option);
+      const { routeIds, directionByRoute: directions } = plannedRouteState(selection.option);
+      const journeyRoutes = routeIds.map((routeId) => {
+        const known = routeItemsRef.current.find((route) => route.route_id === routeId);
+        if (known) return known;
+        const leg = legs.find((item) => item.route_id === routeId)!;
+        return {
+          route_id: leg.route_id,
+          route_short_name: leg.route_short_name,
+          route_long_name: leg.route_long_name,
+          route_type: leg.route_type,
+          route_color: leg.route_color ?? null,
+          route_text_color: leg.route_text_color ?? null
+        } satisfies RouteItem;
+      });
+      const firstRoute = journeyRoutes[0];
+      if (!firstRoute) throw new Error('The planned journey contains no transit route.');
+      const firstRouteDirections = Array.from(new Map(
+        result.presentation.transit
+          .filter((item) => item.leg.route_id === firstRoute.route_id)
+          .map((item) => [
+            `${item.leg.direction_id ?? 'unknown'}:${item.leg.trip_id}`,
+            {
+              direction_id: item.leg.direction_id ?? null,
+              representative_trip_id: item.leg.trip_id,
+              trip_headsign: item.leg.headsign ?? null,
+              stops: item.stops
+            }
+          ])
+      ).values());
+
+      monitoredRouteDataRef.current.clear();
+      for (const route of journeyRoutes) {
+        const items = result.presentation.transit.filter((item) => item.leg.route_id === route.route_id);
+        monitoredRouteDataRef.current.set(route.route_id, {
+          route,
+          directionId: items[0]?.leg.direction_id ?? null,
+          shapes: items.map((item) => ({
+            shape_id: item.leg.shape_id || item.leg.trip_id,
+            direction_id: item.leg.direction_id ?? null,
+            representative_trip_id: item.leg.trip_id,
+            trip_headsign: item.leg.headsign ?? null,
+            geometry: item.geometry,
+            line_color: `#${(item.leg.route_color || '2563eb').replace('#', '')}`
+          })),
+          stops: items.flatMap((item) => item.stops.map((stop) => ({
+            ...stop,
+            line_color: `#${(item.leg.route_color || '2563eb').replace('#', '')}`
+          })))
+        });
+      }
+
+      const nextJourney: ActiveJourney = {
+        selection,
+        presentation: result.presentation,
+        realtime: { vehicles: [], tripUpdates: [], alerts: [], generatedAt: null, partialErrors: [] },
+        partialErrors: result.partialErrors
+      };
+      activeJourneyRef.current = nextJourney;
+      activeRouteIdsRef.current = routeIds;
+      lockedRouteIdsRef.current = routeIds;
+      activeRouteDirectionsRef.current = directions;
+      selectedRouteRef.current = firstRoute;
+      setActiveJourney(nextJourney);
+      setActiveRouteIds(routeIds);
+      setLockedRouteIds(routeIds);
+      setActiveRouteDirections(directions);
+      setSelectedRoute(firstRoute);
+      setRouteDirections(firstRouteDirections);
+      setSelectedDirectionIndex(0);
+      setSelectedStopHighlight(null);
+      setSelectedVehicleHighlight(null);
+      setStopSchedule(null);
+      setRoutePickerOpen(false);
+      commitVehicleItems([]);
+      setAlertItems([]);
+      setTripUpdateItems([]);
+      const allStops = result.presentation.transit.flatMap((item) => item.stops);
+      setStops(allStops);
+      routeMapViewRef.current = {
+        type: 'direction',
+        routeId: firstRoute.route_id,
+        directionId: legs[0]?.direction_id ?? null,
+        tripIds: legs.map((leg) => leg.trip_id)
+      };
+      const selectionItem: SelectedMapItem = { type: 'journey' };
+      selectedMapItemRef.current = selectionItem;
+      setSelectedMapItem(selectionItem);
+      const primaryData = monitoredRouteDataRef.current.get(firstRoute.route_id)!;
+      renderMap(firstRoute, primaryData.shapes, primaryData.stops, null, { fitBounds: false });
+      renderJourneyOverlay(result.presentation, true);
+      setMessage(`${routeIds.length} planned route${routeIds.length === 1 ? '' : 's'} locked`);
+    } catch (error) {
+      if (requestId !== journeySelectionRequest.current) return;
+      if (isExpiredFeedError(error)) throw new Error('The timetable data changed. Plan the journey again.');
+      throw error;
+    } finally {
+      if (requestId === journeySelectionRequest.current) setBusy(false);
+    }
+  }
+
   async function refreshActiveFeed() {
     if (feedRefreshInFlight.current) return;
     feedRefreshInFlight.current = true;
     try {
       const active = await activeFeed();
-      if (active.feed_version === feed?.feed_version) return;
+      if (active.feed_version === feedRef.current?.feed_version) return;
+      const journeyExpired = Boolean(activeJourneyRef.current);
+      if (journeyExpired) clearActiveJourney();
       const routeResult = await allRoutes(active.feed_version);
       setFeed(active);
       setRouteItems(routeResult.items);
@@ -1116,7 +1196,9 @@ export function MapPage({ session, onLogout }: Props) {
       setSelectedVehicleHighlight(null);
       setStopSchedule(null);
       setStopRouteFilter(null);
-      setMessage(`Static feed updated; ${routeResult.page.total} routes available`);
+      setMessage(journeyExpired
+        ? 'Timetable data changed; plan the journey again'
+        : `Static feed updated; ${routeResult.page.total} routes available`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Could not refresh the active feed');
     } finally {
@@ -1709,11 +1791,65 @@ export function MapPage({ session, onLogout }: Props) {
     return true;
   }
 
+  function setJourneyRouteDirections(route: RouteItem, journey: ActiveJourney, directions: RouteDirection[]) {
+    const plannedDirectionId = journey.presentation.transit.find((item) => item.leg.route_id === route.route_id)?.leg.direction_id ?? null;
+    const selectedIndex = Math.max(0, directions.findIndex((direction) => direction.direction_id === plannedDirectionId));
+    setRouteDirections(directions);
+    setSelectedDirectionIndex(selectedIndex);
+  }
+
+  function loadJourneyRouteDirections(route: RouteItem, journey: ActiveJourney) {
+    const fallback = journey.presentation.transit
+      .filter((item) => item.leg.route_id === route.route_id)
+      .map((item) => ({
+        direction_id: item.leg.direction_id ?? null,
+        representative_trip_id: item.leg.trip_id,
+        trip_headsign: item.leg.headsign ?? null,
+        stops: item.stops
+      }));
+    const fallbackDirections = Array.from(new Map(fallback.map((item) => [item.direction_id, item])).values());
+    setJourneyRouteDirections(route, journey, fallbackDirections);
+    const presentationId = journey.presentation.id;
+    void routeStops(journey.selection.feedVersion, route.route_id).then((result) => {
+      if (activeJourneyRef.current?.presentation.id !== presentationId || selectedRouteRef.current?.route_id !== route.route_id) return;
+      setJourneyRouteDirections(route, journey, result.directions);
+    }).catch(() => {
+      // The planned trip's own direction remains available when the route lookup is unavailable.
+    });
+  }
+
   function chooseRoute(route: RouteItem) {
+    const journey = activeJourneyRef.current;
+    if (journey && lockedRouteIdsRef.current.includes(route.route_id)) {
+      selectedRouteRef.current = route;
+      setSelectedRoute(route);
+      const selection: SelectedMapItem = { type: 'route', item: route };
+      selectedMapItemRef.current = selection;
+      setSelectedMapItem(selection);
+      setSelectedStopHighlight(null);
+      setSelectedVehicleHighlight(null);
+      loadJourneyRouteDirections(route, journey);
+      const routeData = monitoredRouteDataRef.current.get(route.route_id);
+      if (routeData) renderMap(route, routeData.shapes, routeData.stops, null, { fitBounds: false });
+      renderJourneyOverlay(journey.presentation, false);
+      return;
+    }
+    if (journey) clearActiveJourney();
     const knownDirectionId = activeRouteDirectionsRef.current[route.route_id];
     focusRouteInRouteMode(route, knownDirectionId, {
       pendingFocus: { type: 'route', routeId: route.route_id, directionId: knownDirectionId ?? null }
     });
+  }
+
+  function showJourneyDetail() {
+    if (!activeJourneyRef.current) return;
+    setRoutePickerOpen(false);
+    setSelectedStopHighlight(null);
+    setSelectedVehicleHighlight(null);
+    const selection: SelectedMapItem = { type: 'journey' };
+    selectedMapItemRef.current = selection;
+    setSelectedMapItem(selection);
+    renderJourneyOverlay(activeJourneyRef.current.presentation, false);
   }
 
   function focusRouteInRouteMode(
@@ -1763,7 +1899,7 @@ export function MapPage({ session, onLogout }: Props) {
     directionId?: number | null,
     options: { tripFocused?: boolean } = {}
   ) {
-    const keep = new Set([...lockedRouteIdsRef.current, route.route_id]);
+    const keep = new Set(retainedRouteIds(lockedRouteIdsRef.current, route.route_id));
     for (const routeId of activeRouteIdsRef.current) {
       if (!keep.has(routeId)) monitoredRouteDataRef.current.delete(routeId);
     }
@@ -1780,14 +1916,14 @@ export function MapPage({ session, onLogout }: Props) {
   }
 
   function toggleRouteLock(route: RouteItem) {
+    if (activeJourneyRef.current) clearActiveJourney();
     const isLocked = lockedRouteIdsRef.current.includes(route.route_id);
-    if (!isLocked && lockedRouteIdsRef.current.length >= MAX_LOCKED_ROUTES) {
+    const result = toggleLockedRouteIds(lockedRouteIdsRef.current, route.route_id, MAX_LOCKED_ROUTES);
+    if (result.rejected) {
       setMessage(UI_TEXT[language].maxLockedRoutes);
       return;
     }
-    setLockedRouteIds((current) => isLocked
-      ? current.filter((routeId) => routeId !== route.route_id)
-      : [...current, route.route_id]);
+    setLockedRouteIds(result.routeIds);
     setActiveRouteIds((current) => current.includes(route.route_id) ? current : [...current, route.route_id]);
     if (isLocked && selectedRouteRef.current?.route_id !== route.route_id) {
       monitoredRouteDataRef.current.delete(route.route_id);
@@ -1802,6 +1938,7 @@ export function MapPage({ session, onLogout }: Props) {
   }
 
   function toggleActiveRoute(route: RouteItem) {
+    if (activeJourneyRef.current) clearActiveJourney();
     setActiveRouteIds((current) => {
       if (!current.includes(route.route_id)) {
         const directionId = route.route_id === selectedRouteRef.current?.route_id
@@ -1832,6 +1969,7 @@ export function MapPage({ session, onLogout }: Props) {
     const selection: SelectedMapItem = { type: 'vehicle', item: vehicle };
     selectedMapItemRef.current = selection;
     setSelectedMapItem(selection);
+    if (activeJourneyRef.current) return;
     const route = routeItemsRef.current.find((item) => item.route_id === vehicle.route_id) ?? selectedRouteRef.current;
     if (!route) return;
     if (selectedRouteRef.current?.route_id !== route.route_id) {
@@ -1849,6 +1987,7 @@ export function MapPage({ session, onLogout }: Props) {
   }
 
   function selectDepartureRoute(route: RouteItem, departure: DepartureItem) {
+    if (activeJourneyRef.current) clearActiveJourney();
     setRoutePickerOpen(false);
     selectedStopHighlightRef.current = null;
     pendingRouteFocusRef.current = {
@@ -1876,6 +2015,7 @@ export function MapPage({ session, onLogout }: Props) {
   }
 
   function selectDepartureVehicle(vehicle: VehicleItem, departure: DepartureItem) {
+    if (activeJourneyRef.current) clearActiveJourney();
     const route = routeItems.find((item) => item.route_id === vehicle.route_id || item.route_id === departure.route_id);
     if (!route) {
       selectVehicle(vehicle);
@@ -2123,6 +2263,19 @@ export function MapPage({ session, onLogout }: Props) {
     setMessage(`${stop.stop_name} selected`);
   }
 
+  function selectJourneyStop(leg: TransitJourneyLeg, endpoint: 'from' | 'to') {
+    const point = leg[endpoint];
+    const plannedLeg = activeJourneyRef.current?.presentation.transit.find((item) => item.leg.trip_id === leg.trip_id);
+    const stop = plannedLeg?.stops.find((item) => item.stop_id === point.stop_id) ?? {
+      stop_id: point.stop_id ?? `${leg.trip_id}:${endpoint}`,
+      stop_name: point.name,
+      stop_lat: point.latitude,
+      stop_lon: point.longitude,
+      platform_code: point.platform_code ?? null
+    };
+    void selectStopAndFilterRoutes(stop, 'map', leg.route_id);
+  }
+
   function refreshSelectedStopSchedule() {
     const detail = selectedMapItemRef.current;
     if (detail?.type !== 'stop') return;
@@ -2167,26 +2320,15 @@ export function MapPage({ session, onLogout }: Props) {
       const requestDirectionIds = selectedRouteApplies && selectedDirectionId != null
         ? [selectedDirectionId]
         : [];
-      const departureResult = await nextDepartures([stop.stop_id], requestRouteIds, undefined, 100, requestDirectionIds);
-      if (requestId !== stopScheduleRequestId.current) return;
-      const tripIds = departureResult.items.map((item) => item.trip_id);
-      const [updateResult, vehicleResult] = tripIds.length > 0
-        ? await Promise.all([
-            tripUpdates([], [], tripIds),
-            vehiclesForTrips(tripIds)
-          ])
-        : [
-            { feed_version: departureResult.feed_version, items: [] },
-            { feed_version: departureResult.feed_version, items: [] }
-          ];
+      const stopDetail = await loadStopTransitDetail(stop.stop_id, requestRouteIds, requestDirectionIds, 100);
       if (requestId !== stopScheduleRequestId.current) return;
       setStopSchedule({
         stopId: stop.stop_id,
         loading: false,
-        departures: departureResult.items,
-        updates: new Map(updateResult.items.map((item) => [item.trip_id, item])),
-        vehicles: new Map(vehicleResult.items.map((item) => [item.trip_id, item])),
-        serviceDate: departureResult.service_date
+        departures: stopDetail.departures,
+        updates: stopDetail.updates,
+        vehicles: stopDetail.vehicles,
+        serviceDate: stopDetail.serviceDate
       });
     } catch (err) {
       if (requestId !== stopScheduleRequestId.current) return;
@@ -2203,7 +2345,7 @@ export function MapPage({ session, onLogout }: Props) {
     const activeStopDirectionId = activeStopRouteId
       ? activeRouteDirectionsRef.current[activeStopRouteId] ?? null
       : null;
-    if (activeStopRouteId) {
+    if (activeStopRouteId && !activeJourneyRef.current) {
       const activeRoute = routeItemsRef.current.find((route) => route.route_id === activeStopRouteId);
       if (activeRoute && selectedRouteRef.current?.route_id !== activeStopRouteId) {
         focusRouteInRouteMode(activeRoute, activeStopDirectionId, {
@@ -2302,13 +2444,13 @@ export function MapPage({ session, onLogout }: Props) {
   );
 
   const routeSidebar = (
-    <aside className="route-sidebar">
-        <header className="product-header">
-          <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
-          <div>
-            <strong>AT Public Note</strong>
-            <span>{feed?.feed_version ?? 'Feed loading'}</span>
-          </div>
+    <aside className={`route-sidebar${controlMode === 'journey' ? ' journey-route-sidebar' : ''}`}>
+        <header className="product-header view-switch-header">
+          <ViewTabs
+            active={controlMode}
+            onMap={onControlModeChange ? () => onControlModeChange('map') : undefined}
+            onJourney={onControlModeChange ? () => onControlModeChange('journey') : undefined}
+          />
           <button
             className="language-toggle"
             onClick={() => setLanguage((current) => (current === 'en' ? 'mi' : 'en'))}
@@ -2318,6 +2460,7 @@ export function MapPage({ session, onLogout }: Props) {
           </button>
         </header>
 
+        <div className="map-route-controls" hidden={controlMode !== 'map'}>
         <div
           className="route-search-wrap"
         >
@@ -2376,6 +2519,14 @@ export function MapPage({ session, onLogout }: Props) {
             ))}
           </div>
         </section>
+        </div>
+
+        <div className="journey-control-panel" hidden={controlMode !== 'journey'}>
+          <JourneyPlannerControls
+            onSelectJourney={applyJourneySelection}
+            onJourneyOptionsChange={setJourneyOptions}
+          />
+        </div>
 
     </aside>
   );
@@ -2385,7 +2536,7 @@ export function MapPage({ session, onLogout }: Props) {
       <section className="map-workspace">
         <section className="map-stage">
           <div ref={mapNode} className="map-canvas" />
-          {mapRouteItems.length > 0 && (
+          {(mapRouteItems.length > 0 || activeJourney) && (
             <div className="map-route-lock-rail" aria-label={t.activeRoutes}>
               {mapRouteItems.map((route) => {
                 const locked = lockedRouteIds.includes(route.route_id);
@@ -2416,6 +2567,17 @@ export function MapPage({ session, onLogout }: Props) {
                   </span>
                 );
               })}
+              {activeJourney && (
+                <button
+                  type="button"
+                  className={`map-journey-detail-button ${selectedMapItem?.type === 'journey' ? 'selected' : ''}`}
+                  onClick={showJourneyDetail}
+                  title="Show planned journey"
+                  aria-label="Show planned journey"
+                >
+                  <Route size={16} />
+                </button>
+              )}
             </div>
           )}
           <div className="map-control-stack">
@@ -2457,7 +2619,16 @@ export function MapPage({ session, onLogout }: Props) {
             {routePickerOpen ? (
               routePickerDetail
             ) : selectedMapItem ? (
-              selectedMapItem.type === 'route' ? (
+              selectedMapItem.type === 'journey' ? (
+                activeJourney
+                  ? <JourneyPlanDetail
+                    journey={activeJourney}
+                    options={journeyOptions.length ? journeyOptions : [activeJourney.selection]}
+                    onSelectOption={(selection) => void applyJourneySelection(selection)}
+                    onSelectStop={selectJourneyStop}
+                  />
+                  : <div className="empty-detail"><strong>Journey unavailable</strong><span>Plan the journey again.</span></div>
+              ) : selectedMapItem.type === 'route' ? (
                 <SelectedRouteDetail
                   route={selectedMapItem.item}
                   direction={routeDirections[selectedDirectionIndex] ?? null}
@@ -2512,6 +2683,74 @@ export function MapPage({ session, onLogout }: Props) {
         </section>
       </section>
     </main>
+  );
+}
+
+function journeyClockTime(value: string) {
+  return new Intl.DateTimeFormat('en-NZ', { hour: 'numeric', minute: '2-digit' }).format(new Date(value));
+}
+
+function journeyDuration(option: JourneyOption) {
+  const minutes = Math.max(1, Math.round(option.duration_seconds / 60));
+  const hours = Math.floor(minutes / 60);
+  return hours ? `${hours} hr ${minutes % 60} min` : `${minutes} min`;
+}
+
+function journeyLegDuration(leg: JourneyOption['legs'][number]) {
+  const seconds = Math.max(0, (new Date(leg.scheduled_arrival).getTime() - new Date(leg.scheduled_departure).getTime()) / 1000);
+  return journeyDuration({ duration_seconds: seconds } as JourneyOption);
+}
+
+function JourneyPlanDetail({
+  journey,
+  options,
+  onSelectOption,
+  onSelectStop
+}: {
+  journey: ActiveJourney;
+  options: JourneyPlanSelection[];
+  onSelectOption: (selection: JourneyPlanSelection) => void;
+  onSelectStop: (leg: TransitJourneyLeg, endpoint: 'from' | 'to') => void;
+}) {
+  const option = journey.selection.option;
+  const warnings = [...new Set([...journey.partialErrors, ...journey.realtime.partialErrors])];
+  return (
+    <section className="detail-card journey-plan-detail-card">
+      <div className="journey-plan-summary">
+        <div id="journey-planner-dock-controls" />
+        <small>{journeyClockTime(option.departure_time)} departure · {journeyDuration(option)} in vehicle · {option.transfers} transfer{option.transfers === 1 ? '' : 's'}</small>
+        {options.length > 1 && (
+          <div className="journey-option-picker" aria-label="Journey options">
+            {options.map((candidate, index) => (
+              <button
+                key={candidate.option.id}
+                type="button"
+                className={candidate.option.id === option.id ? 'selected' : ''}
+                onClick={() => onSelectOption(candidate)}
+                aria-pressed={candidate.option.id === option.id}
+              >
+                <b>Option {index + 1}</b>
+                <span>{candidate.option.legs.map((leg) => leg.route_short_name).join(' → ')}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="journey-plan-leg-list" aria-label="Journey legs">
+        {option.legs.map((leg, index) => (
+          <article key={`${index}-${leg.trip_id}`} className="journey-plan-leg transit" style={{ borderColor: `#${(leg.route_color || '2563eb').replace('#', '')}` }}>
+            <span>{leg.route_short_name}{leg.headsign ? ` · ${leg.headsign}` : ''}</span>
+            <strong>
+              <button type="button" className="journey-plan-stop-button" onClick={() => onSelectStop(leg, 'from')}>{leg.from.name}</button>
+              <span aria-hidden="true"> → </span>
+              <button type="button" className="journey-plan-stop-button" onClick={() => onSelectStop(leg, 'to')}>{leg.to.name}</button>
+            </strong>
+            <small>{journeyLegDuration(leg)} in vehicle</small>
+          </article>
+        ))}
+        {warnings.length > 0 && <p className="journey-plan-warning">{warnings.join(' ')}</p>}
+      </div>
+    </section>
   );
 }
 
@@ -2682,40 +2921,6 @@ function SelectedStopDetail({
       </div>
     </section>
   );
-}
-
-function vehicleLabel(vehicle: VehicleItem | undefined) {
-  if (!vehicle) return 'No vehicle';
-  if (vehicle.vehicle_label) return vehicle.vehicle_label;
-  return vehicle.vehicle_id ? `Vehicle ${vehicle.vehicle_id}` : 'Vehicle assigned';
-}
-
-function vehicleIdentityKey(vehicle: VehicleItem) {
-  const identity =
-    vehicle.trip_id ||
-    vehicle.vehicle_id ||
-    vehicle.vehicle_label ||
-    vehicle.vehicle_license_plate;
-  return String(identity || '').trim();
-}
-
-function dedupeVehicleItems(items: VehicleItem[]) {
-  const byIdentity = new Map<string, VehicleItem>();
-  for (const item of items) {
-    const key = vehicleIdentityKey(item);
-    if (!key) continue;
-    const existing = byIdentity.get(key);
-    if (!existing || (item.timestamp ?? 0) >= (existing.timestamp ?? 0)) {
-      byIdentity.set(key, item);
-    }
-  }
-  return Array.from(byIdentity.values()).slice(0, 80);
-}
-
-function findMatchingVehicle(items: VehicleItem[], vehicle: VehicleItem) {
-  const vehicleKey = vehicleIdentityKey(vehicle);
-  if (vehicleKey) return items.find((item) => vehicleIdentityKey(item) === vehicleKey);
-  return undefined;
 }
 
 type HandledMapClick = MouseEvent & { mapItemHandled?: boolean };
@@ -2933,36 +3138,6 @@ function vehicleTripHeadsign(vehicle: VehicleItem, directions: RouteDirection[],
 function formatVehicleSpeed(speed: number | null | undefined) {
   if (speed == null) return '-';
   return `${Math.round(speed)} km/h`;
-}
-
-function formatOccupancyStatus(status: string | number | null | undefined) {
-  if (status == null || status === '') return '-';
-  const labels: Record<string, string> = {
-    '0': 'Empty',
-    '1': 'Many seats available',
-    '2': 'Few seats available',
-    '3': 'Standing room only',
-    '4': 'Very crowded',
-    '5': 'Full',
-    '6': 'Not accepting passengers',
-    '7': 'Occupancy unavailable',
-    '8': 'Not boardable',
-    EMPTY: 'Empty',
-    MANY_SEATS_AVAILABLE: 'Many seats available',
-    FEW_SEATS_AVAILABLE: 'Few seats available',
-    STANDING_ROOM_ONLY: 'Standing room only',
-    CRUSHED_STANDING_ROOM_ONLY: 'Very crowded',
-    FULL: 'Full',
-    NOT_ACCEPTING_PASSENGERS: 'Not accepting passengers',
-    NO_DATA_AVAILABLE: 'Occupancy unavailable',
-    NOT_BOARDABLE: 'Not boardable'
-  };
-  const value = String(status);
-  return labels[value] ?? value
-    .toLowerCase()
-    .split('_')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
 }
 
 function formatScheduleRelationship(relationship: string | null | undefined, t: UiText) {

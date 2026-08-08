@@ -21,6 +21,14 @@ def _active_version(repo: GtfsRepository) -> str:
     return feed["feed_version"]
 
 
+def _requested_version(repo: GtfsRepository, body: DeparturesRequest) -> str:
+    if not body.feed_version:
+        return _active_version(repo)
+    if not repo.feed_metadata(body.feed_version):
+        raise HTTPException(status_code=404, detail="Unknown feed version")
+    return body.feed_version
+
+
 def _service_date(body: DeparturesRequest) -> date:
     if body.service_date.service_date:
         try:
@@ -49,7 +57,7 @@ def _next_from_seconds(body: DeparturesRequest, service_date: date) -> int:
 def departures(body: DeparturesRequest, user: Annotated[dict, Depends(current_user)], conn: Annotated[DbConnection, Depends(get_conn)], response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
     repo = GtfsRepository(conn)
-    feed_version = _active_version(repo)
+    feed_version = _requested_version(repo, body)
     service_date = _service_date(body)
     items = repo.departures(
         feed_version,
@@ -68,7 +76,7 @@ def departures(body: DeparturesRequest, user: Annotated[dict, Depends(current_us
 def next_departures(body: DeparturesRequest, user: Annotated[dict, Depends(current_user)], conn: Annotated[DbConnection, Depends(get_conn)], response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
     repo = GtfsRepository(conn)
-    feed_version = _active_version(repo)
+    feed_version = _requested_version(repo, body)
     service_date = _service_date(body)
     items = repo.departures(
         feed_version,

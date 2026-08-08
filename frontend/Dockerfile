@@ -2,8 +2,10 @@ FROM node:24-alpine AS build
 WORKDIR /app
 ARG VITE_MAP_STYLE_URL
 ARG VITE_API_BASE_URL
+ARG VITE_JOURNEY_PLANNER_ENABLED=false
 ENV VITE_MAP_STYLE_URL=$VITE_MAP_STYLE_URL
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_JOURNEY_PLANNER_ENABLED=$VITE_JOURNEY_PLANNER_ENABLED
 COPY frontend/package*.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --fetch-retries=5
 COPY frontend ./

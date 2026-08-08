@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +37,33 @@ class Settings(BaseSettings):
     spatial_cache_ttl_seconds: int = 900
     spatial_cache_cell_precision: int = 2
 
+    journey_planner_enabled: bool = True
+    nominatim_base_url: str = "https://nominatim.openstreetmap.org"
+    nominatim_public_policy: bool = True
+    nominatim_user_agent: str = "AT-Public-Note/1.0"
+    nominatim_contact: str = ""
+    nominatim_country_codes: str = "nz"
+    nominatim_viewbox: str = "174.15,-37.25,175.35,-36.35"
+    nominatim_bounded: bool = True
+    nominatim_language: str = "en"
+    nominatim_timeout_seconds: float = Field(default=8.0, gt=0, le=60)
+    geocoding_min_query_length: int = Field(default=3, ge=1, le=20)
+    geocoding_result_limit: int = Field(default=8, ge=1, le=20)
+    geocoding_cache_ttl_seconds: int = Field(default=86400, ge=60)
+    geocoding_negative_cache_ttl_seconds: int = Field(default=900, ge=30)
+    geocoding_reverse_cache_ttl_seconds: int = Field(default=86400, ge=60)
+    geocoding_rate_wait_seconds: float = Field(default=2.5, ge=0, le=30)
+
+    journey_timezone: str = "Pacific/Auckland"
+    journey_access_radius_m: int = Field(default=1000, ge=100, le=5000)
+    journey_walking_speed_mps: float = Field(default=1.2, gt=0, le=3)
+    journey_transfer_buffer_seconds: int = Field(default=120, ge=0, le=1800)
+    journey_max_transfers: int = Field(default=2, ge=0, le=2)
+    journey_max_options: int = Field(default=5, ge=1, le=20)
+    journey_max_access_stops: int = Field(default=12, ge=1, le=100)
+    journey_search_horizon_seconds: int = Field(default=21600, ge=1800, le=172800)
+    journey_requests_per_minute: int = Field(default=30, ge=1, le=600)
+
     cloudflare_zone_id: str | None = None
     cloudflare_api_token: str | None = None
 
@@ -44,6 +72,16 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+
+    @property
+    def nominatim_identification(self) -> str:
+        return f"{self.nominatim_user_agent} ({self.nominatim_contact})" if self.nominatim_contact else self.nominatim_user_agent
+
+    @model_validator(mode="after")
+    def validate_production_geocoder_identification(self):
+        if self.environment.lower() == "production" and self.nominatim_public_policy and not self.nominatim_contact.strip():
+            raise ValueError("NOMINATIM_CONTACT is required in production when public Nominatim policy is enabled")
+        return self
 
 
 @lru_cache
