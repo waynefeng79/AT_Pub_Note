@@ -5,10 +5,15 @@ This guide deploys:
 - Frontend on Cloudflare Pages
 - A solo option with backend, PostgreSQL/PostGIS, Redis, workers, and Caddy on
   one AWS EC2 instance
-- A split option with backend services on one AWS EC2 instance and
-  PostgreSQL/PostGIS on a second AWS EC2 instance
+- A split option with API, Redis, and realtime polling on one AWS EC2 instance
+  and PostgreSQL/PostGIS, migrations, and static GTFS importing on a second
+  AWS EC2 instance
 
 Local development still works with the root `docker-compose.yml` defaults.
+
+All deployment Compose services use `restart: "no"` by default. After an EC2
+or Docker restart, start the required stack explicitly with its documented
+`docker compose ... up -d` command.
 
 ## Domains
 
@@ -112,22 +117,22 @@ The first static import can take time because the worker imports the GTFS zip in
 
 ## Split EC2
 
-Copy these files to the database EC2:
+Clone the repository on both instances. The database instance builds the
+static GTFS importer from the backend source, so it needs the full checkout.
 
-```text
-deploy/db/Dockerfile.postgis
-deploy/db/docker-compose.db.yml
-deploy/db/.env.db.example
-```
-
-Create `.env` next to `docker-compose.db.yml`, set a strong
-`POSTGRES_PASSWORD`, then start the database:
+On the database EC2, create `.env` next to `docker-compose.db.yml`, set the
+database password consistently in `POSTGRES_PASSWORD` and `DATABASE_URL`, and
+set the static-feed configuration (`GTFS_STATIC_URL` and `AT_API_KEY`). Then
+start PostgreSQL, migrations, and the static importer:
 
 ```bash
 cd AT_Pub_Note/deploy/db
 cp .env.db.example .env
 docker compose -f docker-compose.db.yml up -d --build
 ```
+
+The static importer runs beside PostGIS and writes directly to the local
+database. It does not run on the API instance.
 
 On the backend EC2, use the existing split backend deployment files:
 
@@ -151,6 +156,9 @@ cd AT_Pub_Note/deploy/backend
 cp .env.backend.example .env
 docker compose -f docker-compose.backend.yml up -d --build
 ```
+
+The split backend compose runs the API, Redis, Caddy, and realtime worker. It
+does not run migrations or the static GTFS importer.
 
 ## Cloudflare Pages Frontend
 
@@ -250,10 +258,11 @@ Cloudflare Pages:
 
 - Push frontend changes to the connected branch, or trigger a redeploy in Cloudflare.
 
-Database:
+Database and static GTFS:
 
-- For solo deployments, database schema migrations run through the `migrate`
-  service whenever the solo compose is started.
+- For solo deployments, schema migrations and static GTFS importing run with
+  the solo compose stack.
+- For split deployments, both run with the database compose stack.
 - Usually no redeploy is required unless changing database infrastructure.
 - If a separate database EC2 image definition changes, rebuild it on the
   database EC2:

@@ -30,7 +30,7 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    restart: unless-stopped
+    restart: "no"
 
   migrate:
     image: at-pub-note-migration:local
@@ -112,7 +112,7 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
 
   static-worker:
     image: at-pub-note-backend:local
@@ -142,7 +142,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    restart: unless-stopped
+    restart: "no"
 
   realtime-worker:
     image: at-pub-note-backend:local
@@ -174,7 +174,7 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
 
   redis:
     image: redis:7-alpine
@@ -185,7 +185,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 12
-    restart: unless-stopped
+    restart: "no"
 
   caddy:
     image: caddy:2-alpine
@@ -201,7 +201,7 @@ services:
       - caddy-config:/config
     depends_on:
       - backend
-    restart: unless-stopped
+    restart: "no"
 
 volumes:
   postgres-data:
