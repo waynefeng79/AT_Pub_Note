@@ -32,7 +32,64 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    restart: unless-stopped
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-6
+        awslogs-group: /at-pub-note/database
+        awslogs-stream: postgres
+        awslogs-create-group: "true"
+    restart: "no"
+
+  migrate:
+    image: at-pub-note-migration:local
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      target: migration
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-6
+        awslogs-group: /at-pub-note/database
+        awslogs-stream: migrate
+        awslogs-create-group: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  static-worker:
+    image: at-pub-note-backend:local
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      target: runtime
+    command: ["python", "-m", "app.workers.static_import", "--loop"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      GTFS_STATIC_URL: ${GTFS_STATIC_URL:?set GTFS_STATIC_URL}
+      GTFS_STATIC_ZIP_PATH: /app/data/gtfs.zip
+      GTFS_STATIC_POLL_SECONDS: ${GTFS_STATIC_POLL_SECONDS:-3600}
+      GTFS_RETAIN_INACTIVE_FEEDS: ${GTFS_RETAIN_INACTIVE_FEEDS:-2}
+      AT_API_KEY: ${AT_API_KEY:?set AT_API_KEY}
+      AT_API_KEY_HEADER: ${AT_API_KEY_HEADER:-Ocp-Apim-Subscription-Key}
+    volumes:
+      - static-data:/app/data
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-6
+        awslogs-group: /at-pub-note/database
+        awslogs-stream: static-worker
+        awslogs-create-group: "true"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
 
 volumes:
   postgres-data:
+  static-data:
