@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterator
 from datetime import date
 
 from psycopg import sql as psql
@@ -279,8 +280,11 @@ class GtfsRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def planner_trip_times(self, feed_version: str) -> list[dict]:
-        rows = self.conn.execute(
+    def iter_planner_trip_times(self, feed_version: str, batch_size: int = 1000) -> Iterator[dict]:
+        """Yield ordered trip-stop rows without materialising the whole feed in Python."""
+        with self.conn.cursor(name="planner_trip_times") as cursor:
+            cursor.itersize = batch_size
+            cursor.execute(
             """
             SELECT t.trip_id, t.route_id, t.service_id, t.direction_id, t.trip_headsign, t.shape_id,
                    r.route_short_name, r.route_long_name, r.route_type, r.route_color, r.route_text_color,
@@ -295,8 +299,8 @@ class GtfsRepository:
             ORDER BY t.route_id, t.direction_id NULLS FIRST, t.trip_id, st.stop_sequence
             """,
             (feed_version,),
-        ).fetchall()
-        return [dict(row) for row in rows]
+            )
+            yield from cursor
 
     def planner_calendars(self, feed_version: str) -> dict:
         calendars = self.conn.execute(

@@ -15,6 +15,24 @@ class FakeResult:
         return self.row
 
 
+class FakeStreamCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.itersize = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, sql, params=None):
+        self.connection.execute(sql, params)
+
+    def __iter__(self):
+        return iter(self.connection.rows)
+
+
 class FakeConnection:
     def __init__(self, rows=None):
         self.sql = None
@@ -31,6 +49,10 @@ class FakeConnection:
         if "JOIN stop_times st ON st.feed_version = %s AND st.trip_id = r.trip_id" in self.sql:
             return FakeResult(rows=self.rows)
         return FakeResult()
+
+    def cursor(self, name=None):
+        assert name == "planner_trip_times"
+        return FakeStreamCursor(self)
 
 
 def test_route_list_uses_full_text_search_index_expression():
@@ -171,7 +193,7 @@ def test_route_ids_for_trip_ids_uses_active_feed_scope():
 def test_planner_trip_times_are_ordered_and_feed_scoped():
     conn = FakeConnection()
 
-    rows = GtfsRepository(conn).planner_trip_times("feed-9")
+    rows = list(GtfsRepository(conn).iter_planner_trip_times("feed-9"))
 
     assert rows == []
     assert "JOIN stop_times st" in conn.sql
