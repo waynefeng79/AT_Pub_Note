@@ -32,11 +32,17 @@ def _deep_size(value: object, seen: set[int] | None = None) -> int:
     if isinstance(value, (tuple, list, set, frozenset)):
         return size + sum(_deep_size(item, tracked) for item in value)
     if hasattr(value, "__dict__"):
-        return size + _deep_size(vars(value), tracked)
+        size += _deep_size(vars(value), tracked)
+    slots = getattr(type(value), "__slots__", ())
+    if isinstance(slots, str):
+        slots = (slots,)
+    for slot in slots:
+        if slot not in {"__dict__", "__weakref__"}:
+            size += _deep_size(getattr(value, slot), tracked)
     return size
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlannerStop:
     stop_id: str
     name: str
@@ -49,7 +55,7 @@ class PlannerStop:
         return {"stop_id": self.stop_id, "name": self.name, "latitude": self.lat, "longitude": self.lon, "platform_code": self.platform_code}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlannerStopTime:
     stop_id: str
     stop_sequence: int
@@ -59,7 +65,7 @@ class PlannerStopTime:
     drop_off_type: int | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlannerTrip:
     trip_id: str
     route_id: str
@@ -75,7 +81,7 @@ class PlannerTrip:
     stop_times: tuple[PlannerStopTime, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RoutePattern:
     route_id: str
     direction_id: int | None
@@ -85,7 +91,7 @@ class RoutePattern:
     departure_trip_indices: tuple[tuple[int, ...], ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ServiceRule:
     service_id: str
     weekdays: tuple[bool, bool, bool, bool, bool, bool, bool]
@@ -93,7 +99,7 @@ class ServiceRule:
     end_date: date
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TimetableIndex:
     feed_version: str
     stops: dict[str, PlannerStop]
@@ -127,20 +133,30 @@ def build_timetable_index(repo: GtfsRepository, feed_version: str, transfer_radi
         str(row["stop_id"]): PlannerStop(str(row["stop_id"]), row.get("stop_name") or str(row["stop_id"]), float(row["stop_lat"]), float(row["stop_lon"]), row.get("parent_station"), row.get("platform_code"))
         for row in repo.planner_stops(feed_version)
     }
-    by_trip: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in repo.planner_trip_times(feed_version):
-        by_trip[str(row["trip_id"])].append(row)
     trips: list[PlannerTrip] = []
-    for trip_id, rows in sorted(by_trip.items()):
-        rows.sort(key=lambda item: int(item["stop_sequence"]))
+
+    def append_trip(rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
         first = rows[0]
         trip = PlannerTrip(
-            trip_id, str(first["route_id"]), first.get("service_id"), first.get("direction_id"), first.get("trip_headsign"), first.get("shape_id"),
+            str(first["trip_id"]), str(first["route_id"]), first.get("service_id"), first.get("direction_id"), first.get("trip_headsign"), first.get("shape_id"),
             first.get("route_short_name") or str(first["route_id"]), first.get("route_long_name") or first.get("route_short_name") or str(first["route_id"]),
             int(first.get("route_type") or 3), first.get("route_color"), first.get("route_text_color"),
             tuple(PlannerStopTime(str(row["stop_id"]), int(row["stop_sequence"]), int(row["arrival_seconds"]), int(row["departure_seconds"]), row.get("pickup_type"), row.get("drop_off_type")) for row in rows),
         )
         trips.append(trip)
+
+    current_trip_id: str | None = None
+    trip_rows: list[dict[str, Any]] = []
+    for row in repo.iter_planner_trip_times(feed_version):
+        trip_id = str(row["trip_id"])
+        if current_trip_id is not None and trip_id != current_trip_id:
+            append_trip(trip_rows)
+            trip_rows = []
+        trip_rows.append(row)
+        current_trip_id = trip_id
+    append_trip(trip_rows)
     station_stops: dict[str, list[str]] = defaultdict(list)
     for stop in stops.values():
         station_stops[stop.parent_station or stop.stop_id].append(stop.stop_id)
