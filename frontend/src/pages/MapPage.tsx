@@ -357,6 +357,13 @@ function shapeGeometryKey(shape: RouteShape) {
     .join('|');
 }
 
+function vehicleMatchesRouteView(vehicle: VehicleItem, view: RouteMapView | null, route: RouteItem) {
+  if (!view || view.routeId !== route.route_id) return false;
+  if (view.type === 'trip') return vehicle.trip_id === view.tripId;
+  return vehicle.route_id === view.routeId
+    && (view.directionId == null || vehicle.direction_id == null || vehicle.direction_id === view.directionId);
+}
+
 function coordinateKey([lon, lat]: number[]) {
   return `${lon.toFixed(5)},${lat.toFixed(5)}`;
 }
@@ -1467,11 +1474,20 @@ export function MapPage({ session, onLogout, controlMode, onControlModeChange }:
       ensureVehicleImage(instance, route);
       ensureVehicleImage(instance, route, true);
       const vehicleCollection: FeatureCollection<Point> = { type: 'FeatureCollection', features: vehicleFeatures(vehicleItemsRef.current, routeById, route) };
+      const selectedVehicleCollection: FeatureCollection<Point> = {
+        type: 'FeatureCollection',
+        features: vehicleFeatures(
+          vehicleItemsRef.current.filter((vehicle) => vehicleMatchesRouteView(vehicle, routeMapViewRef.current, route)),
+          routeById,
+          route
+        )
+      };
 
       upsertSource(instance, 'route-shapes', routeCollection);
       upsertSource(instance, 'route-stop-connectors', stopConnectorCollection);
       upsertSource(instance, 'route-stops', stopCollection);
       upsertSource(instance, 'route-vehicles', vehicleCollection);
+      upsertSource(instance, 'selected-route-vehicles', selectedVehicleCollection);
 
       if (!instance.getLayer('route-line')) {
         instance.addLayer({
@@ -1559,6 +1575,50 @@ export function MapPage({ session, onLogout, controlMode, onControlModeChange }:
           instance.getCanvas().style.cursor = 'pointer';
         });
         instance.on('mouseleave', 'vehicle-points', () => {
+          instance.getCanvas().style.cursor = '';
+        });
+      }
+
+      if (!instance.getLayer('selected-route-vehicle-halo')) {
+        instance.addLayer({
+          id: 'selected-route-vehicle-halo',
+          type: 'circle',
+          source: 'selected-route-vehicles',
+          paint: {
+            'circle-radius': 13,
+            'circle-color': '#f59e0b',
+            'circle-opacity': 0.28,
+            'circle-stroke-color': '#92400e',
+            'circle-stroke-width': 2
+          }
+        });
+      }
+
+      if (!instance.getLayer('selected-route-vehicle-points')) {
+        instance.addLayer({
+          id: 'selected-route-vehicle-points',
+          type: 'symbol',
+          source: 'selected-route-vehicles',
+          layout: {
+            'icon-image': ['get', 'mode_image'],
+            'icon-size': 1.25,
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true
+          }
+        });
+        const handleSelectedVehicleClick = (event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
+          markMapItemClick(event);
+          const feature = event.features?.[0];
+          if (!feature) return;
+          const vehicleKey = String(feature.properties?.vehicle_key ?? '');
+          const vehicle = vehicleItemsRef.current.find((item) => vehicleIdentityKey(item) === vehicleKey);
+          if (vehicle) selectVehicle(vehicle);
+        };
+        instance.on('click', 'selected-route-vehicle-points', handleSelectedVehicleClick);
+        instance.on('mouseenter', 'selected-route-vehicle-points', () => {
+          instance.getCanvas().style.cursor = 'pointer';
+        });
+        instance.on('mouseleave', 'selected-route-vehicle-points', () => {
           instance.getCanvas().style.cursor = '';
         });
       }
@@ -1699,6 +1759,18 @@ export function MapPage({ session, onLogout, controlMode, onControlModeChange }:
       ensureVehicleImage(instance, selectedRouteRef.current);
       ensureVehicleImage(instance, selectedRouteRef.current, true);
       source.setData({ type: 'FeatureCollection', features: vehicleFeatures(items, lookup, selectedRouteRef.current) });
+      const selectedSource = instance.getSource('selected-route-vehicles') as maplibregl.GeoJSONSource | undefined;
+      const selectedRoute = selectedRouteRef.current;
+      if (selectedSource && selectedRoute) {
+        selectedSource.setData({
+          type: 'FeatureCollection',
+          features: vehicleFeatures(
+            items.filter((vehicle) => vehicleMatchesRouteView(vehicle, routeMapViewRef.current, selectedRoute)),
+            lookup,
+            selectedRoute
+          )
+        });
+      }
     }
   }
 
@@ -1828,6 +1900,13 @@ export function MapPage({ session, onLogout, controlMode, onControlModeChange }:
       setSelectedMapItem(selection);
       setSelectedStopHighlight(null);
       setSelectedVehicleHighlight(null);
+      const plannedLeg = journey.presentation.transit.find((item) => item.leg.route_id === route.route_id)?.leg;
+      routeMapViewRef.current = {
+        type: 'direction',
+        routeId: route.route_id,
+        directionId: plannedLeg?.direction_id ?? null,
+        tripIds: plannedLeg ? [plannedLeg.trip_id] : []
+      };
       loadJourneyRouteDirections(route, journey);
       const routeData = monitoredRouteDataRef.current.get(route.route_id);
       if (routeData) renderMap(route, routeData.shapes, routeData.stops, null, { fitBounds: false });
@@ -1969,9 +2048,19 @@ export function MapPage({ session, onLogout, controlMode, onControlModeChange }:
     const selection: SelectedMapItem = { type: 'vehicle', item: vehicle };
     selectedMapItemRef.current = selection;
     setSelectedMapItem(selection);
-    if (activeJourneyRef.current) return;
     const route = routeItemsRef.current.find((item) => item.route_id === vehicle.route_id) ?? selectedRouteRef.current;
     if (!route) return;
+    const journey = activeJourneyRef.current;
+    if (journey) {
+      if (selectedRouteRef.current?.route_id !== route.route_id) {
+        selectedRouteRef.current = route;
+        setSelectedRoute(route);
+        setActiveRouteDirections((current) => ({ ...current, [route.route_id]: vehicle.direction_id ?? null }));
+        loadJourneyRouteDirections(route, journey);
+      }
+      if (vehicle.trip_id) void focusTripPattern(route, vehicle.trip_id, vehicle.direction_id, vehicle);
+      return;
+    }
     if (selectedRouteRef.current?.route_id !== route.route_id) {
       activateRouteForTrip(route, vehicle.direction_id, vehicle.trip_id, {
         type: 'vehicle',
