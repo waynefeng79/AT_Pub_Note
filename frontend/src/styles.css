@@ -328,13 +328,11 @@ button:disabled {
 }
 
 .app-shell {
-  height: 100vh;
   height: 100svh;
-  height: 100dvh;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, 1fr);
   gap: 10px;
   padding: 12px;
   background: #edf2f5;
@@ -475,6 +473,20 @@ img.brand-mark {
   border: 1px solid #d6e0e8;
   background: #ffffff;
   font-size: 12px;
+}
+
+/* Keep the route search field aligned with the compact journey endpoint field. */
+.route-sidebar .route-search {
+  min-height: 32px;
+  height: 32px;
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.route-sidebar .route-search input {
+  font-size: 11px;
 }
 
 .route-search-wrap {
@@ -648,7 +660,10 @@ img.brand-mark {
 .map-workspace {
   min-width: 0;
   min-height: 0;
-  display: contents;
+  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
 }
 
 .map-stage {
@@ -659,6 +674,22 @@ img.brand-mark {
   border: 1px solid #cbd6df;
   background: #dce6ec;
   overflow: hidden;
+}
+
+.map-bottom {
+  min-width: 0;
+  min-height: 0;
+  max-height: 210px;
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.map-bottom > .detail-dock,
+.map-bottom > .route-sidebar {
+  grid-column: auto;
+  grid-row: auto;
+  max-height: 210px;
 }
 
 .map-canvas {
@@ -1433,14 +1464,6 @@ button.timetable-vehicle {
     overflow: auto;
   }
 
-  .map-workspace {
-    order: 1;
-  }
-
-  .route-sidebar {
-    order: 2;
-  }
-
   .login-hero {
     min-height: 0;
   }
@@ -1469,11 +1492,6 @@ button.timetable-vehicle {
     grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
   }
 
-  .map-workspace {
-    height: auto;
-    min-height: 100vh;
-  }
-
   .map-stage {
     min-height: 620px;
   }
@@ -1488,8 +1506,7 @@ button.timetable-vehicle {
 }
 
 @media (max-width: 720px) {
-  .login-form input,
-  .route-search input {
+  .login-form input {
     font-size: 16px;
   }
 
@@ -1500,7 +1517,6 @@ button.timetable-vehicle {
 
   .login-hero,
   .login-panel,
-  .map-workspace,
   .route-sidebar {
     padding: 14px;
   }
@@ -1546,12 +1562,6 @@ button.timetable-vehicle {
 
   .login-form input {
     min-height: 42px;
-  }
-
-  .map-workspace {
-    min-height: 100svh;
-    min-height: 100dvh;
-    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .map-stage {
@@ -1615,185 +1625,42 @@ button.timetable-vehicle {
   }
 }
 
-@media (max-width: 1280px) and (min-width: 1101px) {
-  .app-shell {
-    grid-template-columns: minmax(0, 1fr) 340px;
-  }
-}
-
 @media (max-width: 1100px) {
   .app-shell {
-    height: 100vh;
-    height: 100svh;
-    height: 100dvh;
-    min-height: 0;
-    grid-template-columns: minmax(0, 1fr) 320px;
-    grid-template-rows: minmax(0, 1fr) auto;
-    gap: 9px;
     padding: 10px;
-    overflow: hidden;
-  }
-
-  .map-workspace {
-    min-height: 0;
-    display: contents;
-    order: initial;
-    padding: 0;
-  }
-
-  .map-stage {
-    grid-column: 1 / -1;
-    grid-row: 1;
-    min-height: 0;
-  }
-
-  .route-sidebar {
-    grid-column: 2;
-    grid-row: 2;
-    order: initial;
-    max-height: 210px;
-    padding: 10px;
-    border: 1px solid #d7e0e7;
-    overflow: auto;
-  }
-
-  .detail-dock {
-    grid-column: 1;
-    grid-row: 2;
-    max-height: 210px;
-    overflow: auto;
-  }
-}
-
-@media (orientation: portrait), (max-width: 720px) {
-  .app-shell {
-    height: 100vh;
-    height: 100svh;
-    height: 100dvh;
-    min-height: 0;
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) auto auto;
-    gap: 8px;
-    padding: 8px;
-    overflow: hidden;
-  }
-
-  .map-workspace {
-    min-height: 0;
-    display: contents;
-    padding: 0;
-  }
-
-  .map-stage {
-    grid-column: 1;
-    grid-row: 1;
-    min-height: 0;
-  }
-
-  .detail-dock {
-    grid-column: 1;
-    grid-row: 2;
-    min-height: 0;
-    max-height: 36svh;
-    overflow: auto;
-  }
-
-  .detail-dock.empty {
-    display: none;
-  }
-
-  .route-sidebar {
-    grid-column: 1;
-    grid-row: 3;
-    max-height: 28svh;
-    padding: 9px;
-    border: 1px solid #d7e0e7;
-    overflow: auto;
-  }
-
-  .route-picker-list {
-    max-height: 96px;
-  }
-}
-
-.app-shell {
-  grid-template-columns: 1fr;
-  grid-template-rows: minmax(0, 1fr);
-}
-
-.map-workspace {
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 10px;
-}
-
-.map-stage {
-  grid-column: auto;
-  grid-row: auto;
-}
-
-.map-bottom {
-  min-width: 0;
-  min-height: 0;
-  max-height: 210px;
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  gap: 10px;
-}
-
-.detail-dock,
-.route-sidebar {
-  grid-column: auto;
-  grid-row: auto;
-  max-height: 210px;
-}
-
-@media (max-width: 1280px) and (min-width: 1101px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .map-bottom {
-    grid-template-columns: 340px minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 1100px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .map-workspace {
-    height: 100%;
-    min-height: 0;
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .map-bottom {
     max-height: 210px;
     grid-template-columns: 320px minmax(0, 1fr);
   }
+}
 
-  .map-stage,
-  .detail-dock,
-  .route-sidebar {
-    grid-column: auto;
-    grid-row: auto;
+/* Keep the lower panel stable while switching map and journey controls in landscape. */
+@media (orientation: landscape) and (min-width: 721px) {
+  .map-bottom {
+    height: 210px;
+    grid-template-rows: 210px;
+  }
+
+  .map-bottom > .detail-dock,
+  .map-bottom > .route-sidebar {
+    height: 100%;
+    max-height: none;
   }
 }
 
 @media (orientation: portrait), (max-width: 720px) {
-  .map-workspace {
-    height: 100%;
-    min-height: 0;
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
-    gap: 8px;
+  .app-shell {
+    height: 100svh;
+    padding: 8px;
+  }
+
+  /* Prevent mobile browsers from zooming the page when these fields receive focus. */
+  .route-sidebar .route-search input,
+  .journey-route-sidebar .journey-search-row input,
+  .journey-dock-controls .journey-search-row input {
+    font-size: 16px;
   }
 
   .map-bottom {
@@ -1825,6 +1692,10 @@ button.timetable-vehicle {
 
   .map-bottom.empty .route-sidebar {
     grid-row: 1;
+  }
+
+  .route-picker-list {
+    max-height: 96px;
   }
 
   .stop-timetable article {
@@ -2228,5 +2099,13 @@ button.timetable-vehicle {
 
   .journey-plan-leg {
     min-width: 0;
+  }
+}
+
+/* Keep journey fields at the mobile browser's no-zoom threshold. */
+@media (orientation: portrait), (max-width: 720px) {
+  .journey-route-sidebar .journey-search-row input,
+  .journey-dock-controls .journey-search-row input {
+    font-size: 16px;
   }
 }
