@@ -219,3 +219,6 @@ __marimo__/
 
 # Dependencies
 node_modules/
+
+# Codex local workspace state
+.codex/
