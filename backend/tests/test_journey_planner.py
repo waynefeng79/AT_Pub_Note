@@ -82,7 +82,11 @@ def test_later_leg_must_be_running_after_first_arrival_and_transfer_buffer():
 
 
 def test_parent_station_transfer_is_allowed_and_duplicate_chains_are_removed():
-    result = plan(index_for(trip("first", "A", ("A", "B"), ("08:05", "08:10")), trip("second", "B", ("X", "D"), ("08:13", "08:20"))))
+    result = plan(index_for(
+        trip("first", "A", ("A", "B"), ("08:05", "08:10")),
+        trip("second", "B", ("X", "D"), ("08:13", "08:20")),
+        coordinates={"B": (0, 0.001), "X": (0, 0.001)},
+    ))
     assert result["options"][0]["transfers"] == 1
     assert [leg["route_id"] for leg in result["options"][0]["legs"]] == ["A", "B"]
 
@@ -99,7 +103,7 @@ def test_same_route_is_not_used_as_a_transfer():
 def test_nearby_stop_transfer_uses_the_configured_access_radius():
     index = index_for(
         trip("first", "A", ("A", "B"), ("08:05", "08:10")),
-        trip("second", "B", ("C", "D"), ("08:13", "08:20")),
+        trip("second", "B", ("C", "D"), ("08:18", "08:25")),
         coordinates={"A": (0, 0), "B": (0, 0.001), "C": (0, 0.004), "D": (0, 1)},
     )
     result = plan(index)

@@ -251,6 +251,11 @@ def _instant(anchor_date: date, seconds: int, timezone: ZoneInfo) -> str:
     return (datetime.combine(anchor_date, datetime_time.min, tzinfo=timezone) + timedelta(seconds=seconds)).isoformat()
 
 
+def _walking_seconds(distance_m: float, speed_mps: float) -> int:
+    """Round walking time up so a stop is not treated as reachable too early."""
+    return math.ceil(max(0.0, distance_m) / speed_mps)
+
+
 _SPATIAL_CELL_DEGREES = 0.01
 
 
@@ -408,8 +413,15 @@ class JourneyPlanner:
             return {"feed_version": self.index.feed_version, "service_date": anchor_date.isoformat(), "status": "no_journey", "options": []}
         horizon = requested_seconds + self.settings.journey_search_horizon_seconds
         patterns_by_stop = self.index.stop_patterns or {}
-        best_arrivals: dict[str, int] = {stop_id: requested_seconds for stop_id in origin}
-        frontier = {stop_id: JourneyLabel(requested_seconds, (), distance) for stop_id, distance in origin.items()}
+        frontier = {
+            stop_id: JourneyLabel(
+                requested_seconds + _walking_seconds(distance, self.settings.journey_walking_speed_mps),
+                (),
+                distance,
+            )
+            for stop_id, distance in origin.items()
+        }
+        best_arrivals: dict[str, int] = {stop_id: label.arrival_seconds for stop_id, label in frontier.items()}
         unique: dict[tuple[str, ...], tuple[tuple[Segment, ...], int, int]] = {}
 
         # RAPTOR rounds: one route-pattern scan per marked pattern, then static transfers.
@@ -473,7 +485,17 @@ class JourneyPlanner:
                     if transfer_stop not in self.index.stops:
                         continue
                     transfer_distance = label.transfer_distance + _distance_m(self.index.stops[stop_id], self.index.stops[transfer_stop])
-                    transfer_label = JourneyLabel(label.arrival_seconds, label.chain, label.source_distance, transfer_distance, label.in_vehicle_seconds)
+                    transfer_walk_seconds = _walking_seconds(
+                        _distance_m(self.index.stops[stop_id], self.index.stops[transfer_stop]),
+                        self.settings.journey_walking_speed_mps,
+                    )
+                    transfer_label = JourneyLabel(
+                        label.arrival_seconds + transfer_walk_seconds,
+                        label.chain,
+                        label.source_distance,
+                        transfer_distance,
+                        label.in_vehicle_seconds,
+                    )
                     existing = next_frontier.get(transfer_stop)
                     if existing is None or (
                         self._label_cost(transfer_label),
