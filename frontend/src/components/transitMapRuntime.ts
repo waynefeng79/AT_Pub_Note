@@ -28,6 +28,7 @@ export function createTransitMap(container: HTMLElement): maplibregl.Map {
     attributionControl: false
   });
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+  map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: 'metric' }), 'bottom-left');
   map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: AT_ATTRIBUTION }), 'bottom-right');
   return map;
 }
