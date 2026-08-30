@@ -9,9 +9,11 @@ from app.api.router import api_router
 from app.cache.redis import RedisClient
 from app.core.config import get_settings
 from app.db.session import Database
-from app.services.activity import realtime_active_user_log_loop
-from app.services.journey_planner import build_timetable_index, planner_index_cache
+from app.middleware.database_wake import DatabaseWakeMiddleware
 from app.repositories.gtfs import GtfsRepository
+from app.services.activity import realtime_active_user_log_loop
+from app.services.database_power import DatabasePowerController, database_power_control_loop
+from app.services.journey_planner import build_timetable_index, planner_index_cache
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -43,14 +45,30 @@ async def lifespan(app: FastAPI):
     app.state.db = Database(settings)
     app.state.db.open()
     app.state.redis = RedisClient(settings)
-    warm_journey_index(app.state.db, settings.journey_planner_enabled, settings.journey_access_radius_m)
+    app.state.database_power = DatabasePowerController(
+        settings,
+        app.state.redis.client,
+        app.state.db,
+        on_ready=lambda: warm_journey_index(
+            app.state.db,
+            settings.journey_planner_enabled,
+            settings.journey_access_radius_m,
+        ),
+    )
+    app.state.database_power.initialize()
+    if not settings.database_power_control_enabled:
+        warm_journey_index(app.state.db, settings.journey_planner_enabled, settings.journey_access_radius_m)
     active_user_log_task = asyncio.create_task(realtime_active_user_log_loop(app.state.redis.client, logger))
+    database_power_task = asyncio.create_task(database_power_control_loop(app.state.database_power))
     try:
         yield
     finally:
+        database_power_task.cancel()
         active_user_log_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await active_user_log_task
+        for task in (database_power_task, active_user_log_task):
+            with suppress(asyncio.CancelledError):
+                await task
+        app.state.database_power.close()
         app.state.redis.close()
         app.state.db.close()
 
@@ -58,6 +76,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+    app.add_middleware(DatabaseWakeMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

@@ -10,6 +10,7 @@ from redis import Redis
 from app.cache.redis import RedisClient
 from app.core.config import Settings, get_settings
 from app.db.session import Database
+from app.services.database_power import database_worker_may_poll
 from app.repositories.gtfs import GtfsRepository
 from app.services.realtime import RealtimeNormalizer, RealtimeService, load_realtime_bytes
 
@@ -146,6 +147,9 @@ def poll_loop() -> None:
             while True:
                 try:
                     refresh_worker_lock(redis.client, token, ttl_seconds)
+                    if not database_worker_may_poll(settings, redis.client):
+                        time.sleep(min(settings.gtfs_realtime_poll_seconds, settings.database_power_check_seconds))
+                        continue
                     _poll_snapshot(settings, redis.client, db)
                     refresh_worker_lock(redis.client, token, ttl_seconds)
                 except RealtimePollerAlreadyRunning:

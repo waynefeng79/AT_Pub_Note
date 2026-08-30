@@ -43,17 +43,19 @@ def fake_app(db_error=None, redis_error=None):
 
 
 def test_readiness_reports_healthy_dependencies():
-    assert readiness(fake_app()) == {"status": "ready", "database": True, "redis": True}
+    assert readiness(fake_app()) == {"status": "ready", "database": True, "database_state": "unmanaged", "redis": True}
 
 
 def test_readiness_reports_each_failed_dependency_without_raising():
     assert readiness(fake_app(db_error=RuntimeError("db down"))) == {
         "status": "degraded",
         "database": False,
+        "database_state": "unmanaged",
         "redis": True,
     }
     assert readiness(fake_app(redis_error=RuntimeError("redis down"))) == {
         "status": "degraded",
         "database": True,
+        "database_state": "unmanaged",
         "redis": False,
     }

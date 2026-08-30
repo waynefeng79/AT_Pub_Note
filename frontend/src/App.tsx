@@ -17,6 +17,7 @@ export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [route, setRoute] = useState<RouteName>('login');
   const [booting, setBooting] = useState(true);
+  const [databaseStarting, setDatabaseStarting] = useState(false);
 
   const endSession = useCallback(() => {
     setSession(null);
@@ -28,6 +29,15 @@ export function App() {
     setUnauthorizedHandler(endSession);
     return () => setUnauthorizedHandler(null);
   }, [endSession]);
+
+  useEffect(() => {
+    const updateDatabaseState = (event: Event) => {
+      const state = (event as CustomEvent<{ state: 'starting' | 'ready' }>).detail.state;
+      setDatabaseStarting(state === 'starting');
+    };
+    window.addEventListener('database-power-state', updateDatabaseState);
+    return () => window.removeEventListener('database-power-state', updateDatabaseState);
+  }, []);
 
   useEffect(() => {
     const syncRoute = () => setRoute(routeFromLocation(session));
@@ -58,7 +68,7 @@ export function App() {
       return (
         <main className="boot-screen">
           <Loader2 className="spin" size={28} />
-          <span>Opening Auckland network</span>
+          <span>{databaseStarting ? 'Starting database service' : 'Opening Auckland network'}</span>
         </main>
       );
     }
@@ -87,7 +97,17 @@ export function App() {
         />
       </Suspense>
     );
-  }, [booting, endSession, route, session]);
+  }, [booting, databaseStarting, endSession, route, session]);
 
-  return page;
+  return (
+    <>
+      {page}
+      {!booting && databaseStarting && (
+        <div className="database-starting" role="status">
+          <Loader2 className="spin" size={18} />
+          <span>Starting database service…</span>
+        </div>
+      )}
+    </>
+  );
 }

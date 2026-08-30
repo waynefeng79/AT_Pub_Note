@@ -11,6 +11,12 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://at:at@127.0.0.1:5432/at_pub_note"
     redis_url: str = "redis://127.0.0.1:6379/0"
+    database_power_control_enabled: bool = False
+    database_power_backend_class: str | None = None
+    database_idle_seconds: int = Field(default=2700, ge=300)
+    database_min_up_seconds: int = Field(default=900, ge=60)
+    database_power_check_seconds: int = Field(default=15, ge=5, le=300)
+    database_power_retry_after_seconds: int = Field(default=5, ge=1, le=60)
 
     jwt_secret_key: str = "dev-secret-change-me"
     jwt_expire_minutes: int = 1440
@@ -78,9 +84,16 @@ class Settings(BaseSettings):
         return f"{self.nominatim_user_agent} ({self.nominatim_contact})" if self.nominatim_contact else self.nominatim_user_agent
 
     @model_validator(mode="after")
-    def validate_production_geocoder_identification(self):
+    def validate_production_settings(self):
         if self.environment.lower() == "production" and self.nominatim_public_policy and not self.nominatim_contact.strip():
             raise ValueError("NOMINATIM_CONTACT is required in production when public Nominatim policy is enabled")
+        if self.database_power_control_enabled:
+            backend_class = (self.database_power_backend_class or "").strip()
+            if not backend_class:
+                raise ValueError("DATABASE_POWER_BACKEND_CLASS is required when database power control is enabled")
+            module_name, separator, class_name = backend_class.partition(":")
+            if not separator or not module_name or not class_name:
+                raise ValueError("DATABASE_POWER_BACKEND_CLASS must use module:Class format")
         return self
 
 

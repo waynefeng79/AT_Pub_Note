@@ -19,3 +19,13 @@ def test_more_than_two_transfers_is_rejected():
 def test_public_nominatim_requires_operator_contact_in_production():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, environment="production", nominatim_public_policy=True, nominatim_contact="")
+
+
+def test_database_power_control_requires_a_backend_class():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, database_power_control_enabled=True)
+
+
+def test_database_power_backend_class_requires_module_and_class():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, database_power_control_enabled=True, database_power_backend_class="invalid")
