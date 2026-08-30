@@ -26,6 +26,7 @@ def run_once() -> str:
 def run_loop() -> None:
     settings = get_settings()
     while True:
+        delay_seconds = settings.gtfs_static_poll_seconds
         try:
             run_once()
         except StaticImportAlreadyRunning as exc:
@@ -33,7 +34,9 @@ def run_loop() -> None:
             raise
         except Exception:
             logger.exception("Static GTFS import failed")
-        time.sleep(settings.gtfs_static_poll_seconds)
+            # PostgreSQL may still be starting after its host or container restarts.
+            delay_seconds = min(60, settings.gtfs_static_poll_seconds)
+        time.sleep(delay_seconds)
 
 
 if __name__ == "__main__":

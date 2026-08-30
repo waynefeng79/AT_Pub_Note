@@ -20,13 +20,53 @@ const API_BASE = (import.meta.env?.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 let onUnauthorized: (() => void) | null = null;
 
 type RequestOptions = RequestInit;
+type ApiErrorDetail = {
+  code?: string;
+  message?: string;
+  retryable?: boolean;
+  retry_after_seconds?: number;
+};
+
+const DATABASE_START_MAX_WAIT_MS = 5 * 60 * 1000;
+let databaseStarting = false;
+
+function announceDatabaseState(state: 'starting' | 'ready') {
+  if (state === 'starting' && databaseStarting) return;
+  if (state === 'ready' && !databaseStarting) return;
+  databaseStarting = state === 'starting';
+  window.dispatchEvent(new CustomEvent('database-power-state', { detail: { state } }));
+}
+
+function waitForRetry(milliseconds: number, signal?: AbortSignal | null) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
+  retryable: boolean;
+  retryAfterSeconds?: number;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, detail: ApiErrorDetail = {}) {
     super(message);
     this.status = status;
+    this.code = detail.code;
+    this.retryable = Boolean(detail.retryable);
+    this.retryAfterSeconds = detail.retry_after_seconds;
   }
 }
 
@@ -34,23 +74,35 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
-  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'include', headers });
-  if (!response.ok) {
-    let message = response.statusText;
-    const body = await response.text();
-    if (body) {
-      try {
-        const payload = JSON.parse(body);
-        message = typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload);
-      } catch {
-        message = body;
+  const startedAt = Date.now();
+  while (true) {
+    const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'include', headers });
+    if (!response.ok) {
+      let message = response.statusText;
+      let detail: ApiErrorDetail = {};
+      const body = await response.text();
+      if (body) {
+        try {
+          const payload = JSON.parse(body);
+          detail = typeof payload.detail === 'object' && payload.detail ? payload.detail : {};
+          message = typeof payload.detail === 'string' ? payload.detail : detail.message ?? JSON.stringify(payload);
+        } catch {
+          message = body;
+        }
       }
+      if (detail.code === 'database_starting' && detail.retryable && Date.now() - startedAt < DATABASE_START_MAX_WAIT_MS) {
+        announceDatabaseState('starting');
+        const retrySeconds = detail.retry_after_seconds ?? (Number(response.headers.get('Retry-After')) || 5);
+        await waitForRetry(Math.max(1, retrySeconds) * 1000, options.signal);
+        continue;
+      }
+      if (response.status === 401 && !path.endsWith('/login')) onUnauthorized?.();
+      throw new ApiError(response.status, message || response.statusText, detail);
     }
-    if (response.status === 401 && !path.endsWith('/login')) onUnauthorized?.();
-    throw new ApiError(response.status, message || response.statusText);
-  }
 
-  return response.json() as Promise<T>;
+    announceDatabaseState('ready');
+    return response.json() as Promise<T>;
+  }
 }
 
 export function setUnauthorizedHandler(handler: (() => void) | null) {

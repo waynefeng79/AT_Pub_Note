@@ -11,9 +11,10 @@ This guide deploys:
 
 Local development still works with the root `docker-compose.yml` defaults.
 
-All deployment Compose services use `restart: "no"` by default. After an EC2
-or Docker restart, start the required stack explicitly with its documented
-`docker compose ... up -d` command.
+The solo and split-backend Compose services use `restart: "no"` by default.
+In the split database deployment, PostgreSQL and the static importer use
+`restart: "always"` so they return automatically when the database host starts.
+The one-shot migration service remains `restart: "no"`.
 
 ## Domains
 
@@ -159,6 +160,67 @@ docker compose -f docker-compose.backend.yml up -d --build
 
 The split backend compose runs the API, Redis, Caddy, and realtime worker. It
 does not run migrations or the static GTFS importer.
+
+### On-demand split database
+
+The split backend can start and stop its database instance based on real user
+activity. This mode does not apply to the solo deployment. The common power
+controller loads its infrastructure implementation from a configurable class,
+keeping provider operations outside the controller.
+
+Set the following in `deploy/backend/.env`:
+
+```text
+DATABASE_POWER_CONTROL_ENABLED=true
+DATABASE_POWER_BACKEND_CLASS=app.services.ec2_database_power:EC2DatabasePowerBackend
+DATABASE_POWER_INSTANCE_ID=i-replace-with-database-instance-id
+AWS_REGION=ap-southeast-6
+DATABASE_IDLE_SECONDS=2700
+DATABASE_MIN_UP_SECONDS=900
+DATABASE_POWER_CHECK_SECONDS=15
+DATABASE_POWER_RETRY_AFTER_SECONDS=5
+```
+
+`backend/app/services/ec2_database_power.py` contains the EC2-specific backend.
+It uses the standard boto3 credential chain, so no access key is stored in the
+Compose environment. Attach an IAM role to the backend host with a policy such
+as the following. `DescribeInstances` requires a wildcard resource, while the
+mutating actions are restricted to the configured database instance:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ec2:StartInstances", "ec2:StopInstances"],
+      "Resource": "arn:aws:ec2:<region>:<account-id>:instance/<database-instance-id>"
+    }
+  ]
+}
+```
+
+When the backend runs in a container, ensure the host's instance metadata is
+reachable from containers. Keep `DATABASE_URL` pointed at the database host's
+stable private address or private DNS record.
+
+Before enabling power control, run the database Compose deployment at least
+once so the containers exist with their restart policies and migrations have
+completed:
+
+```bash
+cd AT_Pub_Note/deploy/db
+docker compose -f docker-compose.db.yml up -d --build
+```
+
+PostgreSQL and `static-worker` then restart with Docker whenever the host starts.
+The backend pauses realtime polling while the database is asleep. A browser
+receiving `database_starting` waits and retries for up to five minutes.
 
 ## Cloudflare Pages Frontend
 

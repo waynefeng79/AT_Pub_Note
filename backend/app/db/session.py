@@ -17,7 +17,7 @@ class Database:
             ConnectionPool[DbConnection],
             ConnectionPool(
                 settings.database_url,
-                min_size=1,
+                min_size=0,
                 max_size=20,
                 timeout=5,
                 check=ConnectionPool.check_connection,

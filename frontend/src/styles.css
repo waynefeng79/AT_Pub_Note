@@ -475,6 +475,24 @@ img.brand-mark {
   font-size: 12px;
 }
 
+.database-starting {
+  position: fixed;
+  z-index: 1000;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 5px 18px rgba(15, 23, 42, 0.2);
+  font-size: 13px;
+}
+
 /* Keep the route search field aligned with the compact journey endpoint field. */
 .route-sidebar .route-search {
   min-height: 32px;

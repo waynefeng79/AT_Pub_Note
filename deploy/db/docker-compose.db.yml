@@ -39,7 +39,7 @@ services:
         awslogs-group: /at-pub-note/database
         awslogs-stream: postgres
         awslogs-create-group: "true"
-    restart: "no"
+    restart: "always"
 
   migrate:
     image: at-pub-note-migration:local
@@ -88,7 +88,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    restart: "no"
+    restart: "always"
 
 volumes:
   postgres-data:
